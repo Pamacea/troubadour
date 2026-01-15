@@ -4,14 +4,17 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use troubadour_core::domain::audio::{AudioDevice, AudioEnumerator};
 use troubadour_core::domain::config::{PresetManager, TroubadourConfig};
 use troubadour_core::domain::mixer::{ChannelId, MixerChannel, MixerEngine};
+use troubadour_infra::audio::CpalAudioEnumerator;
 
 /// Application state shared across Tauri commands
 pub struct AppState {
     mixer: Arc<Mutex<MixerEngine>>,
     preset_manager: Arc<Mutex<PresetManager>>,
     rt: tokio::runtime::Runtime,
+    enumerator: Arc<CpalAudioEnumerator>,
 }
 
 impl AppState {
@@ -60,10 +63,14 @@ impl AppState {
         // Create Tokio runtime for async operations
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
+        // Initialize audio enumerator
+        let enumerator = Arc::new(CpalAudioEnumerator::new());
+
         Self {
             mixer,
             preset_manager,
             rt,
+            enumerator,
         }
     }
 }
@@ -77,6 +84,26 @@ impl Default for AppState {
 // ============================================================================
 // Tauri Commands
 // ============================================================================
+
+/// List all available audio devices
+#[tauri::command]
+fn list_audio_devices(state: tauri::State<AppState>) -> Result<Vec<DeviceInfo>, String> {
+    state
+        .enumerator
+        .input_devices()
+        .map(|devices| {
+            devices
+                .into_iter()
+                .map(|d| DeviceInfo {
+                    id: d.id().as_str().to_string(),
+                    name: d.name().clone(),
+                    device_type: "Input",
+                    max_channels: d.max_channels().map(|c| c.count()).unwrap_or(2),
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
+}
 
 /// Get all mixer channels with their current state
 #[tauri::command]
@@ -360,6 +387,14 @@ fn delete_preset(state: tauri::State<'_, AppState>, name: String) -> Result<(), 
 // ============================================================================
 
 #[derive(serde::Serialize)]
+struct DeviceInfo {
+    id: String,
+    name: String,
+    device_type: &'static str,
+    max_channels: u16,
+}
+
+#[derive(serde::Serialize)]
 struct ChannelInfo {
     id: String,
     name: String,
@@ -405,6 +440,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
+            list_audio_devices,
             get_channels,
             set_volume,
             toggle_mute,

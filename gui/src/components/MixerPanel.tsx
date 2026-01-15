@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MixerChannel } from "./MixerChannel";
 
+interface DeviceInfo {
+  id: string;
+  name: string;
+  device_type: string;
+  max_channels: number;
+}
+
 interface ChannelInfo {
   id: string;
   name: string;
@@ -14,15 +21,31 @@ interface ChannelInfo {
 
 export function MixerPanel() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
+  const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [showDeviceInfo, setShowDeviceInfo] = useState(false);
 
-  // Load channels on mount
+  // Load devices and channels on mount
   useEffect(() => {
+    loadDevices();
     loadChannels();
     // Refresh channels every 100ms for level meters
     const interval = setInterval(loadChannels, 100);
     return () => clearInterval(interval);
   }, []);
+
+  async function loadDevices() {
+    try {
+      const result = await invoke<DeviceInfo[]>("list_audio_devices");
+      setDevices(result);
+      if (result.length > 0 && !selectedDevice) {
+        setSelectedDevice(result[0].id);
+      }
+    } catch (error) {
+      console.error("Failed to load devices:", error);
+    }
+  }
 
   async function loadChannels() {
     try {
@@ -50,7 +73,6 @@ export function MixerPanel() {
   async function handleToggleMute(channelId: string) {
     try {
       await invoke("toggle_mute", { channelId });
-      // Optimistic update
       setChannels((prev) =>
         prev.map((ch) => (ch.id === channelId ? { ...ch, muted: !ch.muted } : ch))
       );
@@ -62,7 +84,6 @@ export function MixerPanel() {
   async function handleToggleSolo(channelId: string) {
     try {
       await invoke("toggle_solo", { channelId });
-      // Optimistic update
       setChannels((prev) =>
         prev.map((ch) => (ch.id === channelId ? { ...ch, solo: !ch.solo } : ch))
       );
@@ -72,39 +93,85 @@ export function MixerPanel() {
   }
 
   async function handleAddChannel() {
-    const id = `channel-${channels.length + 1}`;
+    const id = `channel-${Date.now()}`;
     const name = `Channel ${channels.length + 1}`;
     try {
       await invoke("add_channel", { channelId: id, name });
       await loadChannels();
     } catch (error) {
       console.error("Failed to add channel:", error);
+      alert("Failed to add channel: " + error);
     }
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-slate-400">Loading mixer...</div>
+      <div className="flex items-center justify-center h-full bg-slate-900">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <div className="text-slate-400">Loading mixer...</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 bg-slate-800 border-b border-slate-700">
-        <h2 className="text-lg font-semibold text-slate-200">Mixer</h2>
-        <button
-          onClick={handleAddChannel}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm font-medium"
-        >
-          + Add Channel
-        </button>
+    <div className="flex flex-col h-full bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950">
+      {/* Top Bar - Device Selection */}
+      <div className="bg-slate-800 border-b border-slate-700 px-6 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h2 className="text-lg font-semibold text-white">Audio Mixer</h2>
+
+            {/* Device Selector */}
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-slate-400">Audio Device:</label>
+              <select
+                value={selectedDevice}
+                onChange={(e) => setSelectedDevice(e.target.value)}
+                className="bg-slate-700 text-white text-sm rounded px-3 py-1.5 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px]"
+              >
+                {devices.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.name} ({device.max_channels}ch)
+                  </option>
+                ))}
+              </select>
+
+              <button
+                onClick={() => setShowDeviceInfo(!showDeviceInfo)}
+                className="text-slate-400 hover:text-slate-200 p-1"
+                title="Device info"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9h6m-6 0h.01" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Add Channel Button */}
+          <button
+            onClick={handleAddChannel}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors"
+          >
+            + Add Channel
+          </button>
+        </div>
       </div>
 
+      {/* Device Info Panel (collapsible) */}
+      {showDeviceInfo && (
+        <div className="bg-slate-800 border-b border-slate-700 px-6 py-3">
+          <div className="text-sm text-slate-400">
+            Selected: <span className="text-white font-medium"> {devices.find(d => d.id === selectedDevice)?.name || 'None'}</span>
+          </div>
+        </div>
+      )}
+
       {/* Channel Strips */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden p-6">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden p-8">
         {channels.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
@@ -118,7 +185,7 @@ export function MixerPanel() {
             </div>
           </div>
         ) : (
-          <div className="flex gap-4 h-full">
+          <div className="flex gap-6 h-full">
             {channels.map((channel) => (
               <MixerChannel
                 key={channel.id}

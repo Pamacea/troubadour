@@ -12,6 +12,7 @@
     "commands": {
       "all": false,
       "allow": [
+        "list_audio_devices",
         "get_channels",
         "set_volume",
         "toggle_mute",

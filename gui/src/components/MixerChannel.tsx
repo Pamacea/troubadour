@@ -14,7 +14,6 @@ interface MixerChannelProps {
 }
 
 export function MixerChannel({
-  id,
   name,
   volumeDb,
   muted,
@@ -26,12 +25,11 @@ export function MixerChannel({
   onToggleSolo,
 }: MixerChannelProps) {
   const [localVolume, setLocalVolume] = useState(volumeDb);
+  const [isExpanded, setIsExpanded] = useState(false);
 
-  // Volume in decibels: -60 to +6
+  // Volume range: -60dB to +6dB
   const minVolume = -60;
   const maxVolume = 6;
-
-  // Convert dB to percentage for slider
   const volumePercent = ((localVolume - minVolume) / (maxVolume - minVolume)) * 100;
 
   // Format dB for display
@@ -40,7 +38,21 @@ export function MixerChannel({
     return `${db.toFixed(1)} dB`;
   };
 
-  // Handle volume change
+  // Calculate meter height (logarithmic scale)
+  const meterHeight = () => {
+    if (levelDb <= -60) return 0;
+    if (levelDb > 0) return 100;
+    // Map -60dB to 0dB → 0% to 90%
+    return Math.min(90, ((levelDb + 60) / 60) * 100);
+  };
+
+  // Peak meter (yellow)
+  const peakHeight = () => {
+    if (peakDb <= -60) return 0;
+    if (peakDb > 0) return 100;
+    return Math.min(100, ((peakDb + 60) / 60) * 100);
+  };
+
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const percent = parseFloat(e.target.value);
     const newVolume = minVolume + (percent / 100) * (maxVolume - minVolume);
@@ -48,72 +60,162 @@ export function MixerChannel({
     onVolumeChange(newVolume);
   };
 
-  // Level meter height
-  const levelPercent = ((levelDb - minVolume) / (0 - minVolume)) * 100;
-  const peakPercent = ((peakDb - minVolume) / (0 - minVolume)) * 100;
-
   return (
-    <div className="flex flex-col items-center gap-3 p-4 bg-slate-900 rounded-lg border border-slate-700 min-w-[140px]">
-      {/* Channel Name */}
-      <div className="w-full text-center">
+    <div
+      className={`
+        flex flex-col bg-slate-800 rounded-xl border border-slate-700
+        hover:border-blue-500/50 transition-all duration-200 min-w-[180px]
+        shadow-lg
+      `}
+    >
+      {/* Channel Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
         <input
           type="text"
           defaultValue={name}
-          className="bg-transparent text-sm font-medium text-slate-200 text-center border-none w-full focus:outline-none focus:ring-1 focus:ring-blue-500 rounded"
+          className="bg-transparent text-sm font-medium text-white border-none w-full focus:outline-none focus:ring-0"
         />
-      </div>
-
-      {/* Level Meter */}
-      <div className="relative w-6 h-48 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
-        {/* Peak indicator */}
-        <div
-          className="absolute left-0 right-0 bg-yellow-400 transition-all duration-100"
-          style={{ bottom: `${Math.max(0, Math.min(100, peakPercent))}%`, height: "2px" }}
-        />
-        {/* Current level */}
-        <div
-          className="absolute left-0 right-0 bg-gradient-to-t from-green-500 via-yellow-500 to-red-500 transition-all duration-75"
-          style={{ bottom: 0, height: `${Math.max(0, Math.min(100, levelPercent))}%` }}
-        />
-      </div>
-
-      {/* Volume Fader */}
-      <div className="flex flex-col items-center gap-2 w-full">
-        <span className="text-xs text-slate-400 font-mono">{formatDb(localVolume)}</span>
-        <div className="relative w-full h-32">
-          {/* Fader track */}
-          <div className="absolute inset-0 bg-slate-800 rounded-full border border-slate-700">
-            {/* Fader fill */}
-            <div
-              className="absolute left-0 right-0 bg-blue-500 rounded-full transition-all"
-              style={{ bottom: 0, height: `${volumePercent}%` }}
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="text-slate-400 hover:text-white transition-colors"
+          title={isExpanded ? "Show less" : "Show more"}
+        >
+          <svg
+            className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M19 9l-7 7-7-7"
             />
+          </svg>
+        </button>
+      </div>
+
+      {/* Expanded Section - EQ & Effects (placeholder for now) */}
+      {isExpanded && (
+        <div className="px-4 py-3 border-b border-slate-700 bg-slate-900">
+          <p className="text-xs text-slate-500 text-center italic">
+            EQ & Effects coming soon...
+          </p>
+        </div>
+      )}
+
+      {/* Level Meters (Enhanced) */}
+      <div className="px-4 py-4">
+        <div className="flex gap-1 h-32">
+          {/* Left Meter */}
+          <div className="flex-1 relative">
+            <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-full overflow-hidden">
+              {/* Peak indicator (yellow) */}
+              <div
+                className="absolute left-0 right-0 bg-yellow-400 transition-all duration-75"
+                style={{ bottom: `${peakHeight()}%`, height: "2px" }}
+              />
+              {/* Current level (green → red gradient) */}
+              <div
+                className="absolute left-0 right-0 bg-gradient-to-t from-green-500 via-yellow-500 to-red-500 transition-all duration-75"
+                style={{ bottom: 0, height: `${meterHeight()}%` }}
+              />
+            </div>
           </div>
-          {/* Fader thumb */}
+
+          {/* Right Meter */}
+          <div className="flex-1">
+            <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-full overflow-hidden">
+              <div
+                className="absolute left-0 right-0 bg-gradient-to-t from-green-500 via-yellow-500 to-red-500 transition-all duration-75"
+                style={{ bottom: 0, height: `${meterHeight()}%` }}
+              />
+              <div
+                className="absolute left-0 right-0 bg-yellow-400 transition-all duration-75"
+                style={{ bottom: `${peakHeight()}%`, height: "2px" }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Peak value display */}
+        <div className="text-center mt-2">
+          <span className="text-xs font-mono font-bold text-white">
+            {formatDb(peakDb)}
+          </span>
+        </div>
+      </div>
+
+      {/* Volume Fader (Enhanced) */}
+      <div className="flex flex-col items-center gap-3 px-4 py-4">
+        {/* Volume Display */}
+        <span className="text-xl font-bold text-white font-mono">
+          {formatDb(localVolume)}
+        </span>
+
+        {/* Fader Track */}
+        <div className="relative w-full h-48 bg-slate-900 rounded-full border-4 border-slate-700">
+          {/* Fader Fill */}
+          <div
+            className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-full transition-all duration-75"
+            style={{ bottom: `${volumePercent}%`, height: "100%" }}
+          />
+
+          {/* Fader Thumb */}
           <input
             type="range"
-            min={minVolume}
-            max={maxVolume}
+            min={0}
+            max={100}
             step={0.1}
-            value={localVolume}
+            value={volumePercent}
             onChange={handleVolumeChange}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
             style={{ appearance: "none", background: "transparent" }}
           />
-          {/* Visible fader thumb */}
+
+          {/* Visible Fader Thumb */}
           <div
-            className="absolute left-1/2 w-8 h-4 bg-slate-300 rounded shadow-lg border-2 border-slate-500 transform -translate-x-1/2 transition-all pointer-events-none"
-            style={{ bottom: `calc(${volumePercent}% - 8px)` }}
+            className="absolute left-1/2 -translate-x-1/2 w-10 h-6 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
+            style={{ bottom: `calc(${volumePercent}% - 12px)` }}
           />
+        </div>
+
+        {/* Volume Presets */}
+        <div className="flex gap-2 w-full justify-center">
+          <button
+            onClick={() => onVolumeChange(0)}
+            className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+          >
+            ∞
+          </button>
+          <button
+            onClick={() => onVolumeChange(-6)}
+            className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+          >
+            -6
+          </button>
+          <button
+            onClick={() => onVolumeChange(-12)}
+            className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+          >
+            -12
+          </button>
+          <button
+            onClick={() => onVolumeChange(-18)}
+            className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+          >
+            -18
+          </button>
         </div>
       </div>
 
-      {/* Mute/Solo Buttons */}
-      <div className="flex gap-2 w-full">
+      {/* Mute/Solo Buttons (Enhanced) */}
+      <div className="flex gap-2 px-4 pb-4">
         <button
           onClick={onToggleMute}
           className={`
-            flex-1 py-2 px-3 rounded font-medium text-xs transition-all
+            flex-1 py-2 rounded font-bold text-xs transition-all
             ${muted
               ? "bg-yellow-600 text-white hover:bg-yellow-700"
               : "bg-slate-700 text-slate-300 hover:bg-slate-600"
@@ -125,7 +227,7 @@ export function MixerChannel({
         <button
           onClick={onToggleSolo}
           className={`
-            flex-1 py-2 px-3 rounded font-medium text-xs transition-all
+            flex-1 py-2 rounded font-bold text-xs transition-all
             ${solo
               ? "bg-blue-600 text-white hover:bg-blue-700"
               : "bg-slate-700 text-slate-300 hover:bg-slate-600"
@@ -135,9 +237,6 @@ export function MixerChannel({
           S
         </button>
       </div>
-
-      {/* Channel ID (hidden but useful for debugging) */}
-      <div className="text-xs text-slate-600 font-mono">{id}</div>
     </div>
   );
 }
