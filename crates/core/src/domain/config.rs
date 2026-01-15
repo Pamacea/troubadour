@@ -147,6 +147,9 @@ pub struct BusConfig {
     pub name: String,
     pub volume_db: f32,
     pub muted: bool,
+    /// Input device ID for this bus (None = no direct input)
+    #[serde(default)]
+    pub input_device: Option<String>,
     /// Output device ID for this bus (None = use default output)
     #[serde(default)]
     pub output_device: Option<String>,
@@ -218,6 +221,8 @@ impl MixerConfig {
             if let Some(bus) = engine.bus_mut(&crate::domain::mixer::BusId::new(bus_config.id.clone())) {
                 bus.volume_db = bus_config.volume_db;
                 bus.muted = bus_config.muted;
+                bus.input_device = bus_config.input_device.clone()
+                    .map(|id| crate::domain::audio::DeviceId::new(id));
                 bus.output_device = bus_config.output_device.clone()
                     .map(|id| crate::domain::audio::DeviceId::new(id));
             }
@@ -247,6 +252,7 @@ impl MixerConfig {
                 name: bus.name.clone(),
                 volume_db: bus.volume_db,
                 muted: bus.muted,
+                input_device: bus.input_device.as_ref().map(|d| d.as_str().to_string()),
                 output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
             })
             .collect();
@@ -364,6 +370,7 @@ impl TroubadourConfig {
             name: "A1".to_string(),
             volume_db: 0.0,
             muted: false,
+            input_device: None,
             output_device: None,
         });
 
@@ -372,6 +379,7 @@ impl TroubadourConfig {
             name: "A2".to_string(),
             volume_db: 0.0,
             muted: false,
+            input_device: None,
             output_device: None,
         });
 

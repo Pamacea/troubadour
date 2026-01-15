@@ -666,6 +666,7 @@ fn save_preset(
                     name: bus.name.clone(),
                     volume_db: bus.volume_db,
                     muted: bus.muted,
+                    input_device: bus.input_device.as_ref().map(|d| d.as_str().to_string()),
                     output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
                 })
                 .collect();
@@ -798,6 +799,8 @@ fn load_config(state: tauri::State<AppState>) -> Result<(), String> {
                 if let Some(bus) = mixer.bus_mut(&bus_id) {
                     bus.volume_db = bus_config.volume_db;
                     bus.muted = bus_config.muted;
+                    bus.input_device = bus_config.input_device.clone()
+                        .map(|id| troubadour_core::domain::audio::DeviceId::new(id));
                     bus.output_device = bus_config.output_device.clone()
                         .map(|id| troubadour_core::domain::audio::DeviceId::new(id));
                 }
