@@ -141,12 +141,12 @@ export function MixerChannel({
     <div
       className={`
         flex flex-col flex-shrink-0 bg-slate-800 rounded-xl border border-slate-700
-        hover:border-blue-500/50 transition-all duration-200 w-[180px] h-[min(60vh,450px)] min-h-[300px]
+        hover:border-blue-500/50 transition-all duration-200 w-[140px] h-[min(70vh,600px)] min-h-[400px]
         shadow-lg
       `}
     >
       {/* Channel Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700">
+      <div className="flex items-center justify-between px-3 py-3 border-b border-slate-700">
         <input
           type="text"
           defaultValue={name}
@@ -175,10 +175,10 @@ export function MixerChannel({
 
       {/* Expanded Section - Bus Selection & EQ */}
       {isExpanded && (
-        <div className="px-3 py-2 border-b border-slate-700 bg-slate-900">
+        <div className="px-4 py-3 border-b border-slate-700 bg-slate-900">
           {/* Bus Selection */}
-          <div className="mb-2">
-            <p className="text-xs font-medium text-slate-400 mb-1.5">Output Buses</p>
+          <div className="mb-3">
+            <p className="text-xs font-medium text-slate-400 mb-2">Output Buses</p>
             <div className="flex flex-wrap gap-2">
               {buses.map((bus) => (
                 <button
@@ -213,8 +213,8 @@ export function MixerChannel({
       )}
 
       {/* Level Meters (Enhanced) */}
-      <div className="px-3 py-1.5">
-        <div className="flex gap-1 h-24">
+      <div className="px-3 py-2">
+        <div className="flex gap-1 h-32">
           {/* Left Meter */}
           <div className="flex-1 relative">
             <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
@@ -247,22 +247,22 @@ export function MixerChannel({
         </div>
 
         {/* Peak value display */}
-        <div className="text-center mt-0.5">
-          <span className="text-[10px] font-mono font-bold text-white">
+        <div className="text-center mt-1">
+          <span className="text-xs font-mono font-bold text-white">
             {formatDb(peakDb)}
           </span>
         </div>
       </div>
 
       {/* Volume Fader (Enhanced) */}
-      <div className="flex flex-col items-center gap-1.5 px-3 py-2">
+      <div className="flex flex-col items-center gap-2 px-3 py-3">
         {/* Volume Display */}
-        <span className="text-sm font-bold text-white font-mono">
+        <span className="text-base font-bold text-white font-mono">
           {formatDb(localVolume)}
         </span>
 
         {/* Fader Track */}
-        <div className="relative w-full h-40 bg-slate-900 rounded-3xl border-2 border-slate-700">
+        <div className="relative w-full h-52 bg-slate-900 rounded-3xl border-2 border-slate-700">
           {/* Fader Fill */}
           <div
             className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-3xl transition-all duration-75"
@@ -283,8 +283,8 @@ export function MixerChannel({
 
           {/* Visible Fader Thumb */}
           <div
-            className="absolute left-1/2 -translate-x-1/2 w-7 h-4 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
-            style={{ bottom: `calc(${volumePercent}% - 8px)` }}
+            className="absolute left-1/2 -translate-x-1/2 w-8 h-5 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
+            style={{ bottom: `calc(${volumePercent}% - 10px)` }}
           />
         </div>
 
@@ -318,7 +318,7 @@ export function MixerChannel({
       </div>
 
       {/* Mute/Solo Buttons (Enhanced) */}
-      <div className="flex gap-2 px-3 pb-2">
+      <div className="flex gap-2 px-3 pb-3">
         <button
           onClick={onToggleMute}
           className={`
