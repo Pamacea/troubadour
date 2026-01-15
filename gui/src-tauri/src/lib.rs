@@ -4,17 +4,17 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use troubadour_core::domain::audio::{AudioDevice, AudioEnumerator};
+use troubadour_core::domain::audio::AudioEnumerator;
 use troubadour_core::domain::config::{PresetManager, TroubadourConfig};
 use troubadour_core::domain::mixer::{ChannelId, MixerChannel, MixerEngine};
-use troubadour_infra::audio::CpalAudioEnumerator;
+use troubadour_infra::audio::CpalEnumerator;
 
 /// Application state shared across Tauri commands
 pub struct AppState {
     mixer: Arc<Mutex<MixerEngine>>,
     preset_manager: Arc<Mutex<PresetManager>>,
     rt: tokio::runtime::Runtime,
-    enumerator: Arc<CpalAudioEnumerator>,
+    enumerator: Arc<CpalEnumerator>,
 }
 
 impl AppState {
@@ -64,7 +64,7 @@ impl AppState {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
         // Initialize audio enumerator
-        let enumerator = Arc::new(CpalAudioEnumerator::new());
+        let enumerator = Arc::new(CpalEnumerator::new());
 
         Self {
             mixer,
@@ -87,22 +87,28 @@ impl Default for AppState {
 
 /// List all available audio devices
 #[tauri::command]
-fn list_audio_devices(state: tauri::State<AppState>) -> Result<Vec<DeviceInfo>, String> {
+fn list_audio_devices(state: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    use troubadour_core::domain::audio::AudioError;
+    use serde_json::json;
+
     state
         .enumerator
         .input_devices()
-        .map(|devices| {
+        .map(|devices: Vec<troubadour_core::domain::audio::DeviceInfo>| {
             devices
                 .into_iter()
-                .map(|d| DeviceInfo {
-                    id: d.id().as_str().to_string(),
-                    name: d.name().clone(),
-                    device_type: "Input",
-                    max_channels: d.max_channels().map(|c| c.count()).unwrap_or(2),
+                .map(|d| {
+                    let max_ch = d.channel_counts.first().map(|c| c.count()).unwrap_or(2);
+                    json!({
+                        "id": d.id.as_str(),
+                        "name": d.name,
+                        "device_type": "Input",
+                        "max_channels": max_ch,
+                    })
                 })
                 .collect()
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e: AudioError| e.to_string())
 }
 
 /// Get all mixer channels with their current state
