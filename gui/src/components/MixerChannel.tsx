@@ -64,7 +64,7 @@ export function MixerChannel({
     <div
       className={`
         flex flex-col bg-slate-800 rounded-xl border border-slate-700
-        hover:border-blue-500/50 transition-all duration-200 min-w-[180px]
+        hover:border-blue-500/50 transition-all duration-200 w-[160px] max-h-[600px]
         shadow-lg
       `}
     >
@@ -106,8 +106,8 @@ export function MixerChannel({
       )}
 
       {/* Level Meters (Enhanced) */}
-      <div className="px-4 py-4">
-        <div className="flex gap-1 h-32">
+      <div className="px-3 py-2">
+        <div className="flex gap-1 h-20">
           {/* Left Meter */}
           <div className="flex-1 relative">
             <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
@@ -140,7 +140,7 @@ export function MixerChannel({
         </div>
 
         {/* Peak value display */}
-        <div className="text-center mt-2">
+        <div className="text-center mt-1">
           <span className="text-xs font-mono font-bold text-white">
             {formatDb(peakDb)}
           </span>
@@ -148,14 +148,14 @@ export function MixerChannel({
       </div>
 
       {/* Volume Fader (Enhanced) */}
-      <div className="flex flex-col items-center gap-3 px-4 py-4">
+      <div className="flex flex-col items-center gap-2 px-3 py-3">
         {/* Volume Display */}
-        <span className="text-xl font-bold text-white font-mono">
+        <span className="text-base font-bold text-white font-mono">
           {formatDb(localVolume)}
         </span>
 
         {/* Fader Track */}
-        <div className="relative w-full h-48 bg-slate-900 rounded-3xl border-4 border-slate-700">
+        <div className="relative w-full h-32 bg-slate-900 rounded-3xl border-2 border-slate-700">
           {/* Fader Fill */}
           <div
             className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-3xl transition-all duration-75"
@@ -176,13 +176,13 @@ export function MixerChannel({
 
           {/* Visible Fader Thumb */}
           <div
-            className="absolute left-1/2 -translate-x-1/2 w-10 h-6 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
-            style={{ bottom: `calc(${volumePercent}% - 12px)` }}
+            className="absolute left-1/2 -translate-x-1/2 w-8 h-5 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
+            style={{ bottom: `calc(${volumePercent}% - 10px)` }}
           />
         </div>
 
         {/* Volume Presets */}
-        <div className="flex gap-2 w-full justify-center">
+        <div className="flex gap-1 w-full justify-center text-[10px]">
           <button
             onClick={() => onVolumeChange(0)}
             className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
@@ -211,11 +211,11 @@ export function MixerChannel({
       </div>
 
       {/* Mute/Solo Buttons (Enhanced) */}
-      <div className="flex gap-2 px-4 pb-4">
+      <div className="flex gap-2 px-3 pb-3">
         <button
           onClick={onToggleMute}
           className={`
-            flex-1 py-2 rounded font-bold text-xs transition-all
+            flex-1 py-1.5 rounded font-bold text-xs transition-all
             ${muted
               ? "bg-yellow-600 text-white hover:bg-yellow-700"
               : "bg-slate-700 text-slate-300 hover:bg-slate-600"
@@ -227,7 +227,7 @@ export function MixerChannel({
         <button
           onClick={onToggleSolo}
           className={`
-            flex-1 py-2 rounded font-bold text-xs transition-all
+            flex-1 py-1.5 rounded font-bold text-xs transition-all
             ${solo
               ? "bg-blue-600 text-white hover:bg-blue-700"
               : "bg-slate-700 text-slate-300 hover:bg-slate-600"
