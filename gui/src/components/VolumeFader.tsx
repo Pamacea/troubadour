@@ -85,8 +85,9 @@ export function VolumeFader({
     const newValue = clampValue(dragStartValueRef.current + dbChange);
 
     setLocalValue(newValue);
-    // DON'T call onChange during drag - only on drag end
-  }, [isDragging, max, min, clampValue]);
+    // Call onChange during drag for real-time display update
+    onChange(newValue);
+  }, [isDragging, max, min, clampValue, onChange]);
 
   // Handle mouse/touch end
   const handleDragEnd = useCallback(() => {
@@ -99,9 +100,8 @@ export function VolumeFader({
     document.removeEventListener('touchmove', handleDragMove);
     document.removeEventListener('touchend', handleDragEnd);
 
-    // Call onChange only on drag end to prevent race conditions
-    onChange(localValue);
-  }, [handleDragMove, localValue, onChange]);
+    // onChange already called during drag, no need to call again
+  }, [handleDragMove]);
 
   // Handle click on track
   const handleTrackClick = useCallback((e: React.MouseEvent) => {

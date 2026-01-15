@@ -48,6 +48,7 @@ impl StandardBus {
 pub struct Bus {
     pub id: BusId,
     pub name: String,
+    pub input_device: Option<DeviceId>,
     pub output_device: Option<DeviceId>,
     pub volume_db: f32,
     pub muted: bool,
@@ -59,6 +60,7 @@ impl Bus {
         Self {
             id,
             name,
+            input_device: None,
             output_device: None,
             volume_db: 0.0,
             muted: false,
@@ -75,6 +77,22 @@ impl Bus {
     pub fn with_output_device(mut self, device_id: DeviceId) -> Self {
         self.output_device = Some(device_id);
         self
+    }
+
+    /// Set the input device for this bus
+    pub fn with_input_device(mut self, device_id: DeviceId) -> Self {
+        self.input_device = Some(device_id);
+        self
+    }
+
+    /// Set the input device
+    pub fn set_input_device(&mut self, device_id: Option<DeviceId>) {
+        self.input_device = device_id;
+    }
+
+    /// Get the input device
+    pub fn get_input_device(&self) -> Option<&DeviceId> {
+        self.input_device.as_ref()
     }
 
     /// Get the current gain (linear scale)
