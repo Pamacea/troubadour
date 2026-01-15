@@ -6,5 +6,25 @@
   "permissions": [
     "core:default",
     "opener:default"
-  ]
+  ],
+  "allowlist": {
+    "all": false,
+    "commands": {
+      "all": false,
+      "allow": [
+        "get_channels",
+        "set_volume",
+        "toggle_mute",
+        "toggle_solo",
+        "add_channel",
+        "remove_channel",
+        "get_routing",
+        "set_route",
+        "list_presets",
+        "load_preset",
+        "save_preset",
+        "delete_preset"
+      ]
+    }
+  }
 }

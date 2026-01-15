@@ -19,6 +19,39 @@ impl AppState {
         // Initialize mixer with default configuration
         let mixer = Arc::new(Mutex::new(MixerEngine::new()));
 
+        // Add 3 default channels for immediate usability
+        {
+            let mut mix = mixer.lock().unwrap();
+            mix.add_channel(MixerChannel::new(
+                ChannelId::new("input-1".to_string()),
+                "Input 1".to_string(),
+            ));
+            mix.add_channel(MixerChannel::new(
+                ChannelId::new("input-2".to_string()),
+                "Input 2".to_string(),
+            ));
+            mix.add_channel(MixerChannel::new(
+                ChannelId::new("input-3".to_string()),
+                "Input 3".to_string(),
+            ));
+
+            // Add a master output channel
+            mix.add_channel(MixerChannel::new(
+                ChannelId::new("master".to_string()),
+                "Master".to_string(),
+            ));
+
+            // Set up default routing: all inputs → master
+            let input1 = ChannelId::new("input-1".to_string());
+            let input2 = ChannelId::new("input-2".to_string());
+            let input3 = ChannelId::new("input-3".to_string());
+            let master = ChannelId::new("master".to_string());
+
+            mix.routing_mut().set_route(&input1, &master, true);
+            mix.routing_mut().set_route(&input2, &master, true);
+            mix.routing_mut().set_route(&input3, &master, true);
+        }
+
         // Initialize preset manager
         let preset_manager = Arc::new(Mutex::new(
             PresetManager::new(PathBuf::from("presets"))
