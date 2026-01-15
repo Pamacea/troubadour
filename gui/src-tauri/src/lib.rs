@@ -479,6 +479,8 @@ fn get_buses(state: tauri::State<AppState>) -> Result<Vec<BusInfo>, String> {
             output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
             volume_db: bus.volume_db,
             muted: bus.muted,
+            level_db: -60.0,
+            peak_db: -60.0,
         })
         .collect())
 }
@@ -720,6 +722,8 @@ struct BusInfo {
     output_device: Option<String>,
     volume_db: f32,
     muted: bool,
+    level_db: f32,
+    peak_db: f32,
 }
 
 #[derive(serde::Serialize)]

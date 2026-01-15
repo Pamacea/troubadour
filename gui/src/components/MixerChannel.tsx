@@ -230,7 +230,7 @@ export function MixerChannel({
     <div
       className={`
         flex flex-col shrink-0 rounded-xl border transition-all duration-200
-        w-1/12 h-[min(75vh,40rem)] min-h-1/4 shadow-lg
+        w-32 h-full max-h-[40rem] shadow-lg
         ${is_master
           ? "bg-slate-900 border-2 border-blue-600 hover:border-blue-500"
           : "bg-slate-800 border-slate-700 hover:border-blue-500/50"
@@ -250,7 +250,7 @@ export function MixerChannel({
       aria-label={`Channel ${name} ${focused ? "(focused)" : ""}`}
     >
       {/* Channel Header */}
-      <div className={`flex items-center justify-between px-2 py-2 border-b ${is_master ? "border-blue-800/50 bg-slate-900" : "border-slate-700"}`}>
+      <div className={`flex items-center justify-between p-3 border-b ${is_master ? "border-blue-800/50 bg-slate-900" : "border-slate-700"}`}>
         <div className="flex items-center gap-2 flex-1">
           {is_master && (
             <span className="px-1.5 py-0.5 bg-blue-600 text-white text-[9px] font-bold uppercase tracking-wider rounded">
@@ -286,10 +286,10 @@ export function MixerChannel({
 
       {/* Expanded Section - Bus Selection & EQ */}
       {isExpanded && (
-        <div className="px-2 py-1.5 border-b border-slate-700 bg-slate-900">
+        <div className="flex flex-col gap-3 p-3 border-b border-slate-700 bg-slate-900">
           {/* Input Device Selection */}
-          <div className="mb-3">
-            <p className="text-[10px] font-medium text-slate-400 mb-1">Input Device</p>
+          <div className="flex flex-col gap-1">
+            <p className="text-[10px] font-medium text-slate-400">Input Device</p>
             <div className="relative">
               <select
                 value={selectedInputDevice || "default"}
@@ -297,7 +297,7 @@ export function MixerChannel({
                 disabled={isLoadingDevice}
                 className={`
                   w-full bg-slate-950 text-white text-[10px] rounded-lg border border-slate-600
-                  px-2 py-1.5 pr-6 appearance-none cursor-pointer
+                  px-3 py-2 pr-6 appearance-none cursor-pointer
                   hover:border-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500
                   disabled:opacity-50 disabled:cursor-not-allowed
                   transition-all duration-200
@@ -312,7 +312,7 @@ export function MixerChannel({
               </select>
 
               {/* Custom arrow icon */}
-              <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
                 <svg
                   className="w-3 h-3 text-slate-400"
                   fill="none"
@@ -331,7 +331,7 @@ export function MixerChannel({
 
             {/* Device info */}
             {selectedInputDevice && (
-              <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-400">
+              <div className="flex items-center gap-1 text-[10px] text-slate-400">
                 <svg
                   className="w-3 h-3 text-green-500 flex-shrink-0"
                   fill="currentColor"
@@ -350,7 +350,7 @@ export function MixerChannel({
             )}
 
             {!selectedInputDevice && (
-              <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-500">
+              <div className="flex items-center gap-1 text-[10px] text-slate-500">
                 <svg
                   className="w-3 h-3 flex-shrink-0"
                   fill="currentColor"
@@ -368,15 +368,15 @@ export function MixerChannel({
           </div>
 
           {/* Bus Selection */}
-          <div className="mb-2">
-            <p className="text-[10px] font-medium text-slate-400 mb-1">Output Buses</p>
+          <div className="flex flex-col gap-1">
+            <p className="text-[10px] font-medium text-slate-400">Output Buses</p>
             <div className="flex flex-wrap gap-2">
               {buses.map((bus) => (
                 <button
                   key={bus.id}
                   onClick={() => handleBusToggle(bus.id)}
                   className={`
-                    px-2 py-1 rounded-md text-[10px] font-medium transition-all
+                    px-3 py-2 rounded-md text-[10px] font-medium transition-all
                     ${selectedBuses.includes(bus.id)
                       ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
                       : "bg-slate-700 text-slate-300 hover:bg-slate-600"
@@ -388,7 +388,7 @@ export function MixerChannel({
               ))}
             </div>
             {selectedBuses.length === 0 && (
-              <p className="text-[10px] text-slate-500 mt-1.5 italic">
+              <p className="text-[10px] text-slate-500 italic">
                 No buses selected - channel will be silent
               </p>
             )}
@@ -397,8 +397,8 @@ export function MixerChannel({
         </div>
       )}
 
-      {/* Level Meters (Enhanced) */}
-      <div className="px-2 py-1.5">
+      {/* Level Meters */}
+      <div className="p-3">
         <div className="flex gap-1 h-32">
           {/* Left Meter */}
           <div className="flex-1 relative">
@@ -432,15 +432,15 @@ export function MixerChannel({
         </div>
 
         {/* Peak value display */}
-        <div className="text-center mt-1">
+        <div className="text-center mt-2">
           <span className="text-[10px] font-mono font-bold text-white">
             {formatDb(peakDb)}
           </span>
         </div>
       </div>
 
-      {/* Volume Fader (Studio One Style) */}
-      <div className="flex flex-col items-center gap-2 px-2 py-3">
+      {/* Volume Fader */}
+      <div className="flex flex-col items-center gap-3 px-3 py-4">
         {/* Volume Display */}
         <span className="text-sm font-bold text-white font-mono">
           {formatDb(localVolume)}
@@ -456,22 +456,22 @@ export function MixerChannel({
         />
 
         {/* Volume Presets */}
-        <div className="flex gap-1 w-full justify-center text-[10px]">
+        <div className="flex gap-1 w-full">
           <button
             onClick={() => handlePresetVolume(-6)}
-            className="flex-1 py-1 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+            className="flex-1 py-2 px-3 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             -6
           </button>
           <button
             onClick={() => handlePresetVolume(-12)}
-            className="flex-1 py-1 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+            className="flex-1 py-2 px-3 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             -12
           </button>
           <button
             onClick={() => handlePresetVolume(-18)}
-            className="flex-1 py-1 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+            className="flex-1 py-2 px-3 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             -18
           </button>
@@ -479,15 +479,15 @@ export function MixerChannel({
       </div>
 
       {/* Routing Matrix - Compact Bus Selection */}
-      <div className="px-3 pb-2">
-        <p className="text-[10px] font-medium text-slate-400 mb-1 text-center">To Bus</p>
+      <div className="px-3 pb-3">
+        <p className="text-[10px] font-medium text-slate-400 mb-2 text-center">To Bus</p>
         <div className="flex gap-1">
           {buses.map((bus) => (
             <button
               key={bus.id}
               onClick={() => handleBusToggle(bus.id)}
               className={`
-                flex-1 px-1 py-1 rounded text-[10px] font-bold transition-all
+                flex-1 py-2 px-3 rounded text-[10px] font-bold transition-all
                 ${selectedBuses.includes(bus.id)
                   ? "bg-blue-600 text-white shadow-md shadow-blue-600/30"
                   : "bg-slate-700 text-slate-400 hover:bg-slate-600"
@@ -501,12 +501,12 @@ export function MixerChannel({
         </div>
       </div>
 
-      {/* Mute/Solo Buttons (Enhanced) */}
-      <div className="flex gap-2 px-3 pb-3">
+      {/* Mute/Solo Buttons */}
+      <div className="flex gap-2 px-3 pb-4">
         <button
           onClick={onToggleMute}
           className={`
-            flex-1 py-1.5 rounded font-bold text-xs transition-all
+            flex-1 py-2 px-3 rounded font-bold text-xs transition-all
             ${muted
               ? "bg-yellow-600 text-white hover:bg-yellow-700"
               : "bg-slate-700 text-slate-300 hover:bg-slate-600"
@@ -518,7 +518,7 @@ export function MixerChannel({
         <button
           onClick={onToggleSolo}
           className={`
-            flex-1 py-1.5 rounded font-bold text-xs transition-all
+            flex-1 py-2 px-3 rounded font-bold text-xs transition-all
             ${solo
               ? "bg-blue-600 text-white hover:bg-blue-700"
               : "bg-slate-700 text-slate-300 hover:bg-slate-600"

@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoizedMixerChannel } from "./MixerChannel";
 import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
+import { MemoizedBusStrip } from "./BusStrip";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAutoSaveConfig } from "../hooks/useAutoSaveConfig";
 
@@ -23,6 +24,8 @@ interface BusInfo {
   output_device: string | null;
   volume_db: number;
   muted: boolean;
+  level_db: number;
+  peak_db: number;
 }
 
 export function MixerPanel() {
@@ -32,6 +35,7 @@ export function MixerPanel() {
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
   const [focusedChannelId, setFocusedChannelId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "info" } | null>(null);
+  const [busesCollapsed, setBusesCollapsed] = useState(true);
   // Cache of manually set states to prevent backend from overwriting
   const manualStateOverridesRef = useRef<Map<string, {muted?: boolean, solo?: boolean}>>(new Map());
   // Track recently added channel IDs to prevent polling refresh from removing them
@@ -67,8 +71,11 @@ export function MixerPanel() {
 
     initializeApp();
 
-    // Refresh channels every 500ms for level meters (balance between responsiveness and performance)
-    const interval = setInterval(loadChannels, 500);
+    // Refresh channels and buses every 500ms for level meters (balance between responsiveness and performance)
+    const interval = setInterval(() => {
+      loadChannels();
+      loadBuses();
+    }, 500);
     return () => clearInterval(interval);
   }, []);
 
@@ -297,8 +304,8 @@ export function MixerPanel() {
       } else {
         // Mock buses for development
         const mockBuses: BusInfo[] = [
-          { id: "A1", name: "A1", output_device: null, volume_db: 0, muted: false },
-          { id: "A2", name: "A2", output_device: null, volume_db: 0, muted: false },
+          { id: "A1", name: "A1", output_device: null, volume_db: 0, muted: false, level_db: -60, peak_db: -60 },
+          { id: "A2", name: "A2", output_device: null, volume_db: 0, muted: false, level_db: -60, peak_db: -60 },
         ];
         setBuses(mockBuses);
       }
@@ -483,7 +490,7 @@ export function MixerPanel() {
             </div>
           </div>
         ) : (
-          <div className="flex gap-6 items-stretch h-full py-4 min-w-0">
+          <div className="flex gap-6 items-stretch min-h-full py-4">
             {/* Input Channels */}
             {channels.filter(ch => !ch.is_master).map((channel) => (
               <MemoizedMixerChannel
@@ -537,6 +544,44 @@ export function MixerPanel() {
           </div>
         )}
       </div>
+      {/* Bus Panel */}
+      {buses.length > 0 && (
+        <div className={`border-t border-slate-700 bg-slate-800/50 transition-all duration-200 ${busesCollapsed ? 'py-2 px-4' : 'p-4'}`}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <h3 className="text-xs font-semibold text-slate-300">Output Buses</h3>
+              <span className="text-[10px] text-slate-500">({buses.length} buses)</span>
+            </div>
+            <button
+              onClick={() => setBusesCollapsed(!busesCollapsed)}
+              className="text-slate-400 hover:text-white transition-colors p-1 rounded hover:bg-slate-700"
+              title={busesCollapsed ? "Show buses" : "Hide buses"}
+            >
+              <svg
+                className={`w-4 h-4 transition-transform duration-200 ${busesCollapsed ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </button>
+          </div>
+          {!busesCollapsed && (
+            <div className="flex gap-4 overflow-x-auto pb-2 mt-3">
+              {buses.map((bus) => (
+                <MemoizedBusStrip key={bus.id} bus={bus} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
 
       {/* Toast Notification */}
       {toast && (

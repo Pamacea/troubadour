@@ -7,7 +7,7 @@ function App() {
   const [presetsVisible, setPresetsVisible] = useState(false);
 
   return (
-    <div className="h-screen w-screen bg-slate-950 text-slate-200">
+    <div className="grid grid-rows-[auto_1fr] h-screen w-screen bg-slate-950 text-slate-200 overflow-hidden">
       {/* Top Bar */}
       <div className="h-14 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6">
         <div className="flex items-center gap-3">
@@ -36,15 +36,15 @@ function App() {
       </div>
 
       {/* Main Content */}
-      <div className="flex" style={{ height: "calc(100vh - 3.5rem)" }}>
+      <div className="grid grid-cols-[1fr_auto] overflow-hidden">
         {/* Mixer Panel */}
-        <div className="flex-1">
+        <div className="overflow-hidden">
           <MixerPanel />
         </div>
 
         {/* Preset Manager Sidebar - Collapsible */}
         {presetsVisible && (
-          <div className="w-80 bg-slate-800 border-l border-slate-700 animate-in slide-in-from-right">
+          <div className="w-80 bg-slate-800 border-l border-slate-700 animate-in slide-in-from-right overflow-hidden">
             <PresetManager onClose={() => setPresetsVisible(false)} />
           </div>
         )}
