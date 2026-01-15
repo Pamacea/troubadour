@@ -393,14 +393,6 @@ fn delete_preset(state: tauri::State<'_, AppState>, name: String) -> Result<(), 
 // ============================================================================
 
 #[derive(serde::Serialize)]
-struct DeviceInfo {
-    id: String,
-    name: String,
-    device_type: &'static str,
-    max_channels: u16,
-}
-
-#[derive(serde::Serialize)]
 struct ChannelInfo {
     id: String,
     name: String,

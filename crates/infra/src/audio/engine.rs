@@ -27,6 +27,7 @@ pub struct ActiveStream {
 }
 
 /// Audio engine managing multiple input/output streams
+#[allow(dead_code)] // TODO: Remove once audio streaming is fully implemented
 pub struct AudioEngine {
     enumerator: Arc<dyn AudioEnumerator>,
     mixer: Arc<Mutex<MixerEngine>>,
