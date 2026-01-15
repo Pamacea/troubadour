@@ -836,7 +836,7 @@ fn clear_config(state: tauri::State<AppState>) -> Result<(), String> {
 fn start_audio(state: tauri::State<AppState>) -> Result<String, String> {
     use troubadour_core::domain::audio::SampleRate;
 
-    info!("Starting audio engine with per-channel device routing");
+    info!("Starting audio engine with per-channel and per-bus device routing");
 
     // Create audio engine
     let engine = AudioEngine::new(
@@ -849,9 +849,13 @@ fn start_audio(state: tauri::State<AppState>) -> Result<String, String> {
     // Initialize the engine
     let mut engine_guard = engine;
 
-    // Start streams based on channel device assignments
+    // Start input streams based on channel device assignments
     engine_guard.start_channel_streams()
         .map_err(|e| format!("Failed to start channel streams: {}", e))?;
+
+    // Start output streams based on bus device assignments
+    engine_guard.start_bus_streams()
+        .map_err(|e| format!("Failed to start bus streams: {}", e))?;
 
     // Store the engine in state
     *state.audio_engine.lock().map_err(|e| format!("Lock error: {}", e))? = Some(engine_guard);

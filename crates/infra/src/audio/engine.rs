@@ -2,22 +2,6 @@
 //!
 //! This module provides the AudioEngine which coordinates multiple audio streams,
 //! routes them through the mixer, and handles device connections.
-//!
-//! # CRITICAL TODO: Output Audio Not Being Played
-//!
-//! **MAJOR BUG**: The mixer processes audio correctly, but the output is NOT
-//! being sent to the output streams! Users will see level meters moving but
-//! hear no audio from output devices.
-//!
-//! Current state:
-//! - Input streams: ✅ Working (audio captured from devices)
-//! - Mixer processing: ✅ Working (audio mixed, effects applied)
-//! - Output streams: ❌ Created but NOT receiving audio
-//!
-//! To fix this, in `process_audio()` at line 376:
-//! 1. Get output streams for each bus that has an output_device assigned
-//! 2. Send the mixed bus audio to the corresponding output stream
-//! 3. Handle multiple buses routing to the same output device (mix them)
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -200,6 +184,112 @@ impl AudioEngine {
         Ok(())
     }
 
+    /// Start all output streams based on mixer bus device assignments
+    ///
+    /// This method implements output stream management:
+    /// 1. Reads output_device from each mixer bus
+    /// 2. Groups buses by their assigned device
+    /// 3. Creates one AudioOutputStream per unique device
+    /// 4. Stores mapping of which buses use each stream
+    pub fn start_bus_streams(&mut self) -> Result<()> {
+        info!("Starting bus streams based on device assignments");
+
+        // Lock mixer to read bus configurations
+        let mixer = self.mixer.lock()
+            .map_err(|e| AudioError::StreamError(format!("Mixer lock error: {}", e)))?;
+
+        // Group buses by their assigned output device
+        let mut device_buses: HashMap<Option<String>, Vec<troubadour_core::domain::mixer::BusId>> = HashMap::new();
+
+        for bus in mixer.buses() {
+            let device_id = bus.output_device.as_ref().map(|d| d.as_str().to_string());
+            device_buses
+                .entry(device_id)
+                .or_insert_with(Vec::new)
+                .push(bus.id.clone());
+
+            debug!(
+                "Bus '{}' assigned to device: {:?}",
+                bus.name,
+                bus.output_device
+            );
+        }
+
+        // Drop mixer lock before creating streams (to avoid deadlock)
+        drop(mixer);
+
+        // Create one stream per unique device
+        let mut stream_count = 0;
+        for (device_id_opt, bus_ids) in device_buses {
+            if device_id_opt.is_none() {
+                debug!("Skipping buses with no output device: {:?}", bus_ids);
+                continue;
+            }
+
+            let device_id = DeviceId::new(device_id_opt.unwrap());
+
+            // Get device info to determine supported config
+            let device_info = self.enumerator
+                .output_devices()
+                .map_err(|e| AudioError::StreamError(e.to_string()))?
+                .into_iter()
+                .find(|d| d.id == device_id)
+                .ok_or_else(|| AudioError::DeviceNotFound(format!(
+                    "Output device not found: {}",
+                    device_id.as_str()
+                )))?;
+
+            info!(
+                "Creating output stream for device '{}' ({} buses)",
+                device_info.name,
+                bus_ids.len()
+            );
+
+            // Create stream config
+            let stream_config = StreamConfig {
+                sample_rate: self.target_sample_rate,
+                channels: ChannelCount::Stereo, // TODO: Use device's preferred channel count
+                format: troubadour_core::domain::audio::SampleFormat::F32,
+                buffer_size: self.buffer_size,
+            };
+
+            // Create the actual CPAL audio stream
+            let audio_stream = AudioStream::create_output_stream(
+                &device_id,
+                &stream_config,
+                self.target_sample_rate,
+            ).map_err(|e| {
+                error!("Failed to create output stream for {}: {}", device_id.as_str(), e);
+                e
+            })?;
+
+            // Store stream with target bus mapping
+            let active_stream = ActiveStream {
+                audio_stream,
+                config: EngineStreamConfig {
+                    device_id: device_id.clone(),
+                    channels: 2, // Stereo
+                    sample_rate: self.target_sample_rate,
+                    buffer_size: self.buffer_size,
+                },
+                target_channels: bus_ids.iter().map(|id| ChannelId::new(id.as_str().to_string())).collect(),
+            };
+
+            self.output_streams.insert(device_id.clone(), active_stream);
+            stream_count += 1;
+
+            debug!(
+                "Created output stream for device '{}' serving {} buses: {:?}",
+                device_id.as_str(),
+                bus_ids.len(),
+                bus_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>()
+            );
+        }
+
+        info!("Started {} output streams", stream_count);
+        Ok(())
+    }
+
     /// Start an input stream from the specified device (legacy method)
     ///
     /// Note: Use start_channel_streams() for automatic per-channel routing
@@ -322,6 +412,7 @@ impl AudioEngine {
     /// 2. Distributes audio to all channels using that device
     /// 3. Processes through mixer engine
     /// 4. Updates channel level meters
+    /// 5. Sends mixed audio to output streams
     pub fn process_audio(&mut self) -> Result<()> {
         if !self.running {
             return Ok(());
@@ -373,17 +464,68 @@ impl AudioEngine {
             // Process through mixer (apply routing, gain, effects, etc.)
             let outputs = mixer.process_with_effects(&channel_audio, &mut HashMap::new());
 
-            // TODO: Send outputs to output streams
-            let _ = outputs; // Suppress unused warning for now
+            // Send outputs to output streams
+            // Group outputs by output device (multiple buses can use same device)
+            let mut device_outputs: HashMap<DeviceId, Vec<f32>> = HashMap::new();
+
+            for (bus_id, bus_audio) in &outputs {
+                // Find the bus with this ID
+                let bus = mixer.buses().iter().find(|b| b.id.as_str() == bus_id.as_str());
+
+                if let Some(bus) = bus {
+                    if let Some(output_device_id) = &bus.output_device {
+                        // Mix this bus's audio into the device output
+                        let device_output = device_outputs
+                            .entry(output_device_id.clone())
+                            .or_insert_with(|| vec![0.0; bus_audio.len()]);
+
+                        // Mix the audio (add samples)
+                        for (out_sample, &in_sample) in device_output.iter_mut().zip(bus_audio.iter()) {
+                            *out_sample += in_sample;
+                        }
+
+                        debug!(
+                            "Routed bus '{}' audio to device '{}': {} samples",
+                            bus_id.as_str(),
+                            output_device_id.as_str(),
+                            bus_audio.len()
+                        );
+                    }
+                }
+            }
+
+            // Send mixed audio to each output stream
+            for (device_id, mixed_audio) in device_outputs {
+                if let Some(active_stream) = self.output_streams.get(&device_id) {
+                    if let Err(e) = active_stream.audio_stream.send(mixed_audio.clone()) {
+                        error!(
+                            "Failed to send audio to output device '{}': {}",
+                            device_id.as_str(),
+                            e
+                        );
+                    } else {
+                        trace!(
+                            "Sent {} samples to output device '{}'",
+                            mixed_audio.len(),
+                            device_id.as_str()
+                        );
+                    }
+                } else {
+                    warn!(
+                        "No output stream found for device '{}', audio not sent",
+                        device_id.as_str()
+                    );
+                }
+            }
         }
 
         Ok(())
     }
 
-    /// Refresh streams when channel device assignments change
+    /// Refresh streams when channel or bus device assignments change
     ///
-    /// Call this after modifying channel input_device assignments to restart
-    /// streams with the new routing configuration.
+    /// Call this after modifying device assignments to restart streams with
+    /// the new routing configuration.
     pub fn refresh_streams(&mut self) -> Result<()> {
         info!("Refreshing audio streams due to device assignment changes");
 
@@ -392,18 +534,28 @@ impl AudioEngine {
 
         // Restart with new configuration
         self.start_channel_streams()?;
+        self.start_bus_streams()?;
 
         Ok(())
     }
 
     /// Stop all input streams
     fn stop_all_streams(&mut self) -> Result<()> {
-        info!("Stopping all input streams");
+        info!("Stopping all streams");
 
-        let device_ids: Vec<_> = self.input_streams.keys().cloned().collect();
-        for device_id in device_ids {
+        // Stop input streams
+        let input_device_ids: Vec<_> = self.input_streams.keys().cloned().collect();
+        for device_id in input_device_ids {
             if let Some(_stream) = self.input_streams.remove(&device_id) {
-                debug!("Stopped stream for device '{}'", device_id.as_str());
+                debug!("Stopped input stream for device '{}'", device_id.as_str());
+            }
+        }
+
+        // Stop output streams
+        let output_device_ids: Vec<_> = self.output_streams.keys().cloned().collect();
+        for device_id in output_device_ids {
+            if let Some(_stream) = self.output_streams.remove(&device_id) {
+                debug!("Stopped output stream for device '{}'", device_id.as_str());
             }
         }
 
