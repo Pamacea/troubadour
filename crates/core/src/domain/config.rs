@@ -104,6 +104,9 @@ pub struct ChannelConfig {
     pub volume_db: f32,
     pub muted: bool,
     pub solo: bool,
+    /// Input device ID for this channel (None = use default input)
+    #[serde(default)]
+    pub input_device: Option<String>,
 }
 
 impl From<&MixerChannel> for ChannelConfig {
@@ -114,6 +117,7 @@ impl From<&MixerChannel> for ChannelConfig {
             volume_db: channel.volume.db(),
             muted: channel.muted,
             solo: channel.solo,
+            input_device: channel.input_device.clone(),
         }
     }
 }
@@ -131,8 +135,21 @@ impl ChannelConfig {
         if self.solo {
             channel.toggle_solo();
         }
+        channel.input_device = self.input_device.clone();
         channel
     }
+}
+
+/// Bus configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusConfig {
+    pub id: String,
+    pub name: String,
+    pub volume_db: f32,
+    pub muted: bool,
+    /// Output device ID for this bus (None = use default output)
+    #[serde(default)]
+    pub output_device: Option<String>,
 }
 
 /// Routing configuration
@@ -163,6 +180,7 @@ impl From<&RouteConfig> for crate::domain::mixer::RouteEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MixerConfig {
     pub channels: Vec<ChannelConfig>,
+    pub buses: Vec<BusConfig>,
     pub routing: RoutingConfig,
 }
 
@@ -175,6 +193,34 @@ impl MixerConfig {
         for channel_config in &self.channels {
             let channel = channel_config.to_channel();
             engine.add_channel(channel);
+        }
+
+        // Set up bus configurations - add buses dynamically based on config
+        // First, clear default buses and add configured ones
+        let target_bus_count = self.buses.len();
+
+        // Add buses until we reach the target count
+        while engine.bus_count() < target_bus_count {
+            if engine.add_bus().is_err() {
+                break; // Max limit reached
+            }
+        }
+
+        // Remove buses if we have too many
+        while engine.bus_count() > target_bus_count {
+            if engine.remove_bus().is_err() {
+                break; // Min limit reached
+            }
+        }
+
+        // Now configure each bus
+        for bus_config in &self.buses {
+            if let Some(bus) = engine.bus_mut(&crate::domain::mixer::BusId::new(bus_config.id.clone())) {
+                bus.volume_db = bus_config.volume_db;
+                bus.muted = bus_config.muted;
+                bus.output_device = bus_config.output_device.clone()
+                    .map(|id| crate::domain::audio::DeviceId::new(id));
+            }
         }
 
         // Set up routing
@@ -194,11 +240,35 @@ impl MixerConfig {
             .map(ChannelConfig::from)
             .collect();
 
-        let routing = RoutingConfig {
-            routes: Vec::new(), // TODO: Extract from routing matrix
-        };
+        let buses: Vec<BusConfig> = engine.buses()
+            .iter()
+            .map(|bus| BusConfig {
+                id: bus.id.as_str().to_string(),
+                name: bus.name.clone(),
+                volume_db: bus.volume_db,
+                muted: bus.muted,
+                output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
+            })
+            .collect();
 
-        Self { channels, routing }
+        let channel_ids: Vec<_> = engine.channels().map(|ch| ch.id.clone()).collect();
+
+        let routes: Vec<RouteConfig> = channel_ids
+            .iter()
+            .flat_map(|from| {
+                engine.routing().get_outputs(from)
+                    .into_iter()
+                    .map(move |to| RouteConfig {
+                        from: from.as_str().to_string(),
+                        to: to.as_str().to_string(),
+                        enabled: true,
+                    })
+            })
+            .collect();
+
+        let routing = RoutingConfig { routes };
+
+        Self { channels, buses, routing }
     }
 }
 
@@ -217,6 +287,7 @@ impl Default for TroubadourConfig {
             audio: AudioDeviceConfig::default(),
             mixer: MixerConfig {
                 channels: Vec::new(),
+                buses: Vec::new(),
                 routing: RoutingConfig { routes: Vec::new() },
             },
         }
@@ -266,6 +337,7 @@ impl TroubadourConfig {
             volume_db: 0.0,
             muted: false,
             solo: false,
+            input_device: None,
         });
 
         config.mixer.channels.push(ChannelConfig {
@@ -274,6 +346,7 @@ impl TroubadourConfig {
             volume_db: -6.0,
             muted: false,
             solo: false,
+            input_device: None,
         });
 
         config.mixer.channels.push(ChannelConfig {
@@ -282,12 +355,30 @@ impl TroubadourConfig {
             volume_db: -12.0,
             muted: false,
             solo: false,
+            input_device: None,
         });
 
-        // Default routing: all to output
-        let output_channels = vec!["A", "B"];
+        // Add 2 default buses (A1, A2)
+        config.mixer.buses.push(BusConfig {
+            id: "A1".to_string(),
+            name: "A1".to_string(),
+            volume_db: 0.0,
+            muted: false,
+            output_device: None,
+        });
+
+        config.mixer.buses.push(BusConfig {
+            id: "A2".to_string(),
+            name: "A2".to_string(),
+            volume_db: 0.0,
+            muted: false,
+            output_device: None,
+        });
+
+        // Default routing: all to output buses
+        let output_buses = vec!["A1", "A2"];
         for input in &["mic", "music", "system"] {
-            for output in &output_channels {
+            for output in &output_buses {
                 config.mixer.routing.routes.push(RouteConfig {
                     from: input.to_string(),
                     to: output.to_string(),
@@ -505,6 +596,140 @@ impl PresetManager {
     }
 }
 
+/// Configuration manager for the main Troubadour config
+///
+/// Manages the main configuration file at `~/.config/troubadour/config.toml`
+/// with auto-save functionality and debouncing.
+pub struct ConfigManager {
+    config_dir: PathBuf,
+    config_path: PathBuf,
+    _auto_save_interval_secs: u64, // Reserved for future use
+}
+
+impl ConfigManager {
+    /// Create a new ConfigManager
+    ///
+    /// # Arguments
+    /// * `config_dir` - Configuration directory path (e.g., `~/.config/troubadour`)
+    /// * `auto_save_interval_secs` - Auto-save interval in seconds (0 = disabled)
+    pub fn new(config_dir: PathBuf, auto_save_interval_secs: u64) -> Self {
+        let config_path = config_dir.join("config.toml");
+
+        Self {
+            config_dir,
+            config_path,
+            _auto_save_interval_secs: auto_save_interval_secs,
+        }
+    }
+
+    /// Get the default config directory path
+    ///
+    /// Returns `~/.config/troubadour` on Linux/Mac
+    /// Returns `%APPDATA%\troubadour` on Windows
+    pub fn default_config_dir() -> Result<PathBuf> {
+        let config_dir = if cfg!(windows) {
+            dirs::config_dir()
+                .map(|p| p.join("troubadour"))
+                .ok_or_else(|| ConfigError::Invalid("Could not determine config directory".to_string()))?
+        } else {
+            dirs::config_dir()
+                .map(|p| p.join("troubadour"))
+                .ok_or_else(|| ConfigError::Invalid("Could not determine config directory".to_string()))?
+        };
+
+        Ok(config_dir)
+    }
+
+    /// Get the config file path
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
+    }
+
+    /// Load configuration from file
+    ///
+    /// If the config file doesn't exist, returns factory default.
+    /// If the config file is corrupt, logs an error and returns factory default.
+    #[instrument(skip(self))]
+    pub async fn load(&self) -> TroubadourConfig {
+        if !self.config_path.exists() {
+            info!(
+                path = %self.config_path.display(),
+                "Config file not found, creating factory default"
+            );
+
+            let config = TroubadourConfig::factory_default();
+
+            // Save the factory default for next time
+            if let Err(e) = config.save_to_file(&self.config_path).await {
+                error!(
+                    path = %self.config_path.display(),
+                    error = %e,
+                    "Failed to save factory default config"
+                );
+            }
+
+            return config;
+        }
+
+        match TroubadourConfig::load_from_file(&self.config_path).await {
+            Ok(config) => {
+                info!(
+                    path = %self.config_path.display(),
+                    "Configuration loaded successfully"
+                );
+                config
+            }
+            Err(e) => {
+                error!(
+                    path = %self.config_path.display(),
+                    error = %e,
+                    "Failed to load config, using factory default"
+                );
+
+                // Backup the corrupt config
+                let backup_path = self.config_path.with_extension("toml.corrupt");
+                if let Err(copy_err) = fs::copy(&self.config_path, &backup_path).await {
+                    error!(
+                        path = %backup_path.display(),
+                        error = %copy_err,
+                        "Failed to backup corrupt config"
+                    );
+                }
+
+                TroubadourConfig::factory_default()
+            }
+        }
+    }
+
+    /// Save configuration to file
+    #[instrument(skip(self, config))]
+    pub async fn save(&self, config: &TroubadourConfig) -> Result<()> {
+        // Create config directory if it doesn't exist
+        fs::create_dir_all(&self.config_dir).await?;
+
+        config.save_to_file(&self.config_path).await
+    }
+
+    /// Clear configuration (delete config file)
+    #[instrument(skip(self))]
+    pub async fn clear(&self) -> Result<()> {
+        if self.config_path.exists() {
+            fs::remove_file(&self.config_path).await?;
+            info!(
+                path = %self.config_path.display(),
+                "Configuration cleared"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Check if config file exists
+    pub fn exists(&self) -> bool {
+        self.config_path.exists()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +814,7 @@ mod tests {
             volume_db: -100.0, // Below minimum
             muted: false,
             solo: false,
+            input_device: None,
         };
 
         let channel = config.to_channel();

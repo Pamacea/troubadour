@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
-[dev-dependencies]
+[dependencies]
 tokio = { workspace = true }
 troubadour-core = { path = "../core" }
 troubadour-infra = { path = "../infra" }

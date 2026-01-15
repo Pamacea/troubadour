@@ -1,7 +1,10 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { MixerChannel } from "./MixerChannel";
-import { BusStrip } from "./BusStrip";
+import { MemoizedMixerChannel } from "./MixerChannel";
+import { MemoizedBusStrip } from "./BusStrip";
+import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useAutoSaveConfig } from "../hooks/useAutoSaveConfig";
 
 interface DeviceInfo {
   id: string;
@@ -18,6 +21,8 @@ interface ChannelInfo {
   solo: boolean;
   level_db: number;
   peak_db: number;
+  input_device?: string | null;
+  is_master?: boolean;
 }
 
 interface BusInfo {
@@ -36,18 +41,200 @@ export function MixerPanel() {
   const [loading, setLoading] = useState(true);
   const [showDeviceInfo, setShowDeviceInfo] = useState(false);
   const [showBusPanel, setShowBusPanel] = useState(true);
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+  const [focusedChannelId, setFocusedChannelId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "info" } | null>(null);
   // Cache of manually set states to prevent backend from overwriting
   const manualStateOverridesRef = useRef<Map<string, {muted?: boolean, solo?: boolean}>>(new Map());
+  // Track recently added channel IDs to prevent polling refresh from removing them
+  const pendingChannelAddsRef = useRef<Set<string>>(new Set());
+
+  // Auto-save configuration with 1 second debounce
+  // Tracks when channels, buses, or routing change
+  useAutoSaveConfig(
+    () => true, // Always save when deps change
+    [channels, buses],
+    1000 // 1 second debounce
+  );
 
   // Load devices and channels on mount
   useEffect(() => {
-    loadDevices();
-    loadChannels();
-    loadBuses();
+    // Load configuration first, then initialize devices and channels
+    const initializeApp = async () => {
+      try {
+        // Load saved configuration
+        if (typeof window !== 'undefined' && window.__TAURI__) {
+          await invoke("load_config");
+          console.log("Configuration loaded successfully");
+        }
+      } catch (error) {
+        console.error("Failed to load configuration:", error);
+        // Continue with default state if config loading fails
+      }
+
+      // Initialize devices and channels
+      loadDevices();
+      loadChannels();
+      loadBuses();
+    };
+
+    initializeApp();
+
     // Refresh channels every 100ms for level meters
     const interval = setInterval(loadChannels, 100);
     return () => clearInterval(interval);
   }, []);
+
+  // Show toast notification - memoized
+  const showToast = useCallback((message: string, type: "success" | "info" = "info") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 2000);
+  }, []);
+
+  // Navigate channels with Tab - memoized
+  const handleChannelNavigation = useCallback((direction: "next" | "prev") => {
+    if (channels.length === 0) return;
+
+    const currentIndex = focusedChannelId
+      ? channels.findIndex((ch) => ch.id === focusedChannelId)
+      : -1;
+
+    let nextIndex: number;
+    if (direction === "next") {
+      nextIndex = currentIndex + 1 >= channels.length ? 0 : currentIndex + 1;
+    } else {
+      nextIndex = currentIndex - 1 < 0 ? channels.length - 1 : currentIndex - 1;
+    }
+
+    setFocusedChannelId(channels[nextIndex].id);
+  }, [channels, focusedChannelId]);
+
+  // Adjust volume with keyboard - memoized
+  const handleVolumeAdjust = useCallback((deltaDb: number) => {
+    if (!focusedChannelId) return;
+
+    const channel = channels.find((ch) => ch.id === focusedChannelId);
+    if (!channel) return;
+
+    const newVolume = Math.min(6, Math.max(-60, channel.volume_db + deltaDb));
+
+    // Call the volume change handler inline to avoid circular dependency
+    (async () => {
+      try {
+        if (typeof window !== 'undefined' && window.__TAURI__) {
+          await invoke("set_volume", { channelId: focusedChannelId, volumeDb: newVolume });
+        } else {
+          console.log(`Mock: Set volume for ${focusedChannelId} to ${newVolume} dB`);
+        }
+        setChannels((prev) =>
+          prev.map((ch) => (ch.id === focusedChannelId ? { ...ch, volume_db: newVolume } : ch))
+        );
+      } catch (error) {
+        console.error("Failed to set volume:", error);
+      }
+    })();
+
+    const direction = deltaDb > 0 ? "increased" : "decreased";
+    showToast(`${channel.name} volume ${direction} to ${newVolume.toFixed(1)} dB`);
+  }, [focusedChannelId, channels, showToast]);
+
+  // Save configuration - memoized
+  const handleSaveConfig = useCallback(async () => {
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("save_config");
+      } else {
+        console.log("Mock: Save configuration");
+      }
+      showToast("Configuration saved", "success");
+    } catch (error) {
+      console.error("Failed to save configuration:", error);
+      showToast("Failed to save configuration", "info");
+    }
+  }, [showToast]);
+
+  // Setup keyboard shortcuts
+  useKeyboardShortcuts({
+    shortcuts: [
+      {
+        key: "m",
+        action: () => {
+          if (focusedChannelId) {
+            handleToggleMute(focusedChannelId);
+            const channel = channels.find((ch) => ch.id === focusedChannelId);
+            showToast(`${channel?.name}: ${channel?.muted ? "Unmuted" : "Muted"}`);
+          }
+        },
+        description: "Toggle mute",
+      },
+      {
+        key: "s",
+        action: () => {
+          if (focusedChannelId) {
+            handleToggleSolo(focusedChannelId);
+            const channel = channels.find((ch) => ch.id === focusedChannelId);
+            showToast(`${channel?.name}: ${channel?.solo ? "Solo Off" : "Solo On"}`);
+          }
+        },
+        description: "Toggle solo",
+      },
+      {
+        key: "ArrowUp",
+        action: () => handleVolumeAdjust(1),
+        description: "Volume +1dB",
+      },
+      {
+        key: "ArrowDown",
+        action: () => handleVolumeAdjust(-1),
+        description: "Volume -1dB",
+      },
+      {
+        key: "ArrowUp",
+        shiftKey: true,
+        action: () => handleVolumeAdjust(6),
+        description: "Volume +6dB",
+      },
+      {
+        key: "ArrowDown",
+        shiftKey: true,
+        action: () => handleVolumeAdjust(-6),
+        description: "Volume -6dB",
+      },
+      {
+        key: "Tab",
+        action: () => handleChannelNavigation("next"),
+        description: "Next channel",
+        preventDefault: true,
+      },
+      {
+        key: "Tab",
+        shiftKey: true,
+        action: () => handleChannelNavigation("prev"),
+        description: "Previous channel",
+        preventDefault: true,
+      },
+      {
+        key: "s",
+        ctrlKey: true,
+        action: handleSaveConfig,
+        description: "Save configuration",
+      },
+      {
+        key: "F1",
+        action: () => setShowKeyboardShortcuts(true),
+        description: "Show keyboard shortcuts",
+      },
+      {
+        key: "Escape",
+        action: () => {
+          setFocusedChannelId(null);
+          setShowKeyboardShortcuts(false);
+        },
+        description: "Clear focus / Close modal",
+      },
+    ],
+    disabled: loading,
+  });
 
   async function loadDevices() {
     try {
@@ -84,40 +271,58 @@ export function MixerPanel() {
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         const result = (await invoke<ChannelInfo[]>("get_channels")) || [];
-        // Apply manual overrides to prevent backend from overwriting user actions
+
+        // Preserve recently added channels that might not be in backend yet
+        const pendingAdds = pendingChannelAddsRef.current;
+        const enhancedResult = pendingAdds.size > 0
+          ? [
+              ...result,
+              ...Array.from(pendingAdds).map(id => ({
+                id,
+                name: `Channel ${result.length + 1}`,
+                volume_db: 0,
+                muted: false,
+                solo: false,
+                level_db: -60,
+                peak_db: -60,
+                is_master: false,
+              }))
+            ]
+          : result;
+
+        // Apply manual overrides and identify master channel
         setChannels(() =>
-          result.map((newChannel) => {
+          enhancedResult.map((newChannel) => {
             const override = manualStateOverridesRef.current.get(newChannel.id);
-            if (override) {
-              return {
-                ...newChannel,
+            return {
+              ...newChannel,
+              is_master: newChannel.id === "master" || newChannel.name.toLowerCase() === "master",
+              ...(override && {
                 ...(override.muted !== undefined && { muted: override.muted }),
                 ...(override.solo !== undefined && { solo: override.solo }),
-              };
-            }
-            return newChannel;
+              }),
+            };
           })
         );
       } else {
         // Mock channels for development - preserve manual overrides
         const mockChannels: ChannelInfo[] = [
-          { id: "input-1", name: "Input 1", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
-          { id: "input-2", name: "Input 2", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
-          { id: "input-3", name: "Input 3", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
-          { id: "master", name: "Master", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
+          { id: "input-1", name: "Input 1", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60, is_master: false },
+          { id: "input-2", name: "Input 2", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60, is_master: false },
+          { id: "input-3", name: "Input 3", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60, is_master: false },
+          { id: "master", name: "Master", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60, is_master: true },
         ];
         // Apply manual overrides even in mock mode
         setChannels(() =>
           mockChannels.map((channel) => {
             const override = manualStateOverridesRef.current.get(channel.id);
-            if (override) {
-              return {
-                ...channel,
+            return {
+              ...channel,
+              ...(override && {
                 ...(override.muted !== undefined && { muted: override.muted }),
                 ...(override.solo !== undefined && { solo: override.solo }),
-              };
-            }
-            return channel;
+              }),
+            };
           })
         );
       }
@@ -138,7 +343,6 @@ export function MixerPanel() {
         const mockBuses: BusInfo[] = [
           { id: "A1", name: "A1", output_device: null, volume_db: 0, muted: false },
           { id: "A2", name: "A2", output_device: null, volume_db: 0, muted: false },
-          { id: "A3", name: "A3", output_device: null, volume_db: 0, muted: false },
         ];
         setBuses(mockBuses);
       }
@@ -147,7 +351,55 @@ export function MixerPanel() {
     }
   }
 
-  async function handleVolumeChange(channelId: string, volumeDb: number) {
+  // Bus management functions
+  async function handleAddBus() {
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const busId = await invoke<string>("add_bus");
+        console.log(`Added bus: ${busId}`);
+        await loadBuses();
+      } else {
+        console.log("Mock: Add bus");
+        const newBusNum = buses.length + 1;
+        const newBus: BusInfo = {
+          id: `A${newBusNum}`,
+          name: `A${newBusNum}`,
+          output_device: null,
+          volume_db: 0,
+          muted: false,
+        };
+        setBuses([...buses, newBus]);
+      }
+    } catch (error) {
+      console.error("Failed to add bus:", error);
+      alert("Failed to add bus: " + error);
+    }
+  }
+
+  async function handleRemoveBus() {
+    if (buses.length <= 2) {
+      alert("Cannot remove bus: Minimum 2 buses required");
+      return;
+    }
+
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const busId = await invoke<string>("remove_bus");
+        console.log(`Removed bus: ${busId}`);
+        await loadBuses();
+      } else {
+        console.log("Mock: Remove bus");
+        const newBuses = buses.slice(0, -1);
+        setBuses(newBuses);
+      }
+    } catch (error) {
+      console.error("Failed to remove bus:", error);
+      alert("Failed to remove bus: " + error);
+    }
+  }
+
+  // Memoized handlers to prevent recreation on every render
+  const handleVolumeChange = useCallback(async (channelId: string, volumeDb: number) => {
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         await invoke("set_volume", { channelId, volumeDb });
@@ -161,9 +413,9 @@ export function MixerPanel() {
     } catch (error) {
       console.error("Failed to set volume:", error);
     }
-  }
+  }, []);
 
-  async function handleToggleMute(channelId: string) {
+  const handleToggleMute = useCallback(async (channelId: string) => {
     const channel = channels.find(ch => ch.id === channelId);
     if (!channel) return;
 
@@ -194,9 +446,9 @@ export function MixerPanel() {
       );
     }
     // Note: We keep the override indefinitely - only remove on error or explicit new action
-  }
+  }, [channels]);
 
-  async function handleToggleSolo(channelId: string) {
+  const handleToggleSolo = useCallback(async (channelId: string) => {
     const channel = channels.find(ch => ch.id === channelId);
     if (!channel) return;
 
@@ -227,14 +479,27 @@ export function MixerPanel() {
       );
     }
     // Note: We keep the override indefinitely - only remove on error or explicit new action
-  }
+  }, [channels]);
+
+  const handleFocus = useCallback((channelId: string) => {
+    setFocusedChannelId(channelId);
+  }, []);
 
   async function handleAddChannel() {
     const id = `channel-${Date.now()}`;
     const name = `Channel ${channels.length + 1}`;
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
+        // Add to pending set IMMEDIATELY to preserve it during refreshes
+        pendingChannelAddsRef.current.add(id);
+
         await invoke("add_channel", { channelId: id, name });
+
+        // Remove from pending set after a short delay to ensure backend has processed it
+        setTimeout(() => {
+          pendingChannelAddsRef.current.delete(id);
+        }, 500);
+
         await loadChannels();
       } else {
         console.log(`Mock: Add channel ${id} (${name})`);
@@ -251,6 +516,8 @@ export function MixerPanel() {
       }
     } catch (error) {
       console.error("Failed to add channel:", error);
+      // Clean up pending add on error
+      pendingChannelAddsRef.current.delete(id);
       alert("Failed to add channel: " + error);
     }
   }
@@ -303,12 +570,21 @@ export function MixerPanel() {
           </div>
 
           {/* Add Channel Button */}
-          <button
-            onClick={handleAddChannel}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors"
-          >
-            + Add Channel
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowKeyboardShortcuts(true)}
+              className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-sm font-medium transition-colors"
+              title="Keyboard shortcuts (F1)"
+            >
+              ⌨ Shortcuts
+            </button>
+            <button
+              onClick={handleAddChannel}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium transition-colors"
+            >
+              + Add Channel
+            </button>
+          </div>
         </div>
       </div>
 
@@ -337,8 +613,9 @@ export function MixerPanel() {
           </div>
         ) : (
           <div className="flex gap-6 items-stretch h-full py-4 min-w-0">
-            {channels.map((channel) => (
-              <MixerChannel
+            {/* Input Channels */}
+            {channels.filter(ch => !ch.is_master).map((channel) => (
+              <MemoizedMixerChannel
                 key={channel.id}
                 id={channel.id}
                 name={channel.name}
@@ -347,9 +624,43 @@ export function MixerPanel() {
                 solo={channel.solo}
                 levelDb={channel.level_db}
                 peakDb={channel.peak_db}
+                inputDevice={channel.input_device}
+                focused={focusedChannelId === channel.id}
+                onFocus={() => handleFocus(channel.id)}
                 onVolumeChange={(vol) => handleVolumeChange(channel.id, vol)}
                 onToggleMute={() => handleToggleMute(channel.id)}
                 onToggleSolo={() => handleToggleSolo(channel.id)}
+                is_master={false}
+              />
+            ))}
+
+            {/* Visual Separator */}
+            {channels.filter(ch => !ch.is_master).length > 0 && channels.filter(ch => ch.is_master).length > 0 && (
+              <div className="flex flex-col items-center justify-center gap-2 px-4 border-l-2 border-slate-600">
+                <div className="w-px h-16 bg-gradient-to-b from-transparent via-slate-500 to-transparent"></div>
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">→ Master</span>
+                <div className="w-px h-16 bg-gradient-to-b from-transparent via-slate-500 to-transparent"></div>
+              </div>
+            )}
+
+            {/* Master Channel */}
+            {channels.filter(ch => ch.is_master).map((channel) => (
+              <MemoizedMixerChannel
+                key={channel.id}
+                id={channel.id}
+                name={channel.name}
+                volumeDb={channel.volume_db}
+                muted={channel.muted}
+                solo={channel.solo}
+                levelDb={channel.level_db}
+                peakDb={channel.peak_db}
+                inputDevice={channel.input_device}
+                focused={focusedChannelId === channel.id}
+                onFocus={() => handleFocus(channel.id)}
+                onVolumeChange={(vol) => handleVolumeChange(channel.id, vol)}
+                onToggleMute={() => handleToggleMute(channel.id)}
+                onToggleSolo={() => handleToggleSolo(channel.id)}
+                is_master={true}
               />
             ))}
           </div>
@@ -362,24 +673,61 @@ export function MixerPanel() {
           <div className="px-6 py-3 flex items-center justify-between border-b border-slate-700">
             <div className="flex items-center gap-3">
               <h3 className="text-sm font-semibold text-white">Output Buses</h3>
-              <span className="text-xs text-slate-400">A1, A2, A3 - Assign output devices</span>
+              <span className="text-xs text-slate-400">
+                {buses.map(b => b.name).join(", ")} - Assign output devices
+              </span>
             </div>
-            <button
-              onClick={() => setShowBusPanel(false)}
-              className="text-slate-400 hover:text-white transition-colors"
-              title="Hide bus panel"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Add Bus Button */}
+              <button
+                onClick={handleAddBus}
+                disabled={buses.length >= 5}
+                className={`
+                  px-3 py-1.5 rounded text-sm font-medium transition-all duration-200
+                  ${buses.length >= 5
+                    ? 'bg-slate-700 text-slate-500 cursor-not-allowed opacity-50'
+                    : 'bg-green-600 hover:bg-green-700 text-white'
+                  }
+                `}
+                title={buses.length >= 5 ? "Maximum bus limit reached (5)" : "Add new bus"}
+              >
+                + Add Bus
+              </button>
+
+              {/* Remove Bus Button */}
+              <button
+                onClick={handleRemoveBus}
+                disabled={buses.length <= 2}
+                className={`
+                  px-3 py-1.5 rounded text-sm font-medium transition-all duration-200
+                  ${buses.length <= 2
+                    ? 'bg-slate-700 text-slate-500 cursor-not-allowed opacity-50'
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+                  }
+                `}
+                title={buses.length <= 2 ? "Minimum bus limit reached (2)" : "Remove last bus"}
+              >
+                - Remove Bus
+              </button>
+
+              {/* Hide Panel Button */}
+              <button
+                onClick={() => setShowBusPanel(false)}
+                className="text-slate-400 hover:text-white transition-colors ml-2"
+                title="Hide bus panel"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div className="p-6 overflow-x-auto">
             <div className="flex gap-4 min-w-max">
               {buses.map((bus) => (
-                <div key={bus.id} className="w-72">
-                  <BusStrip bus={bus} />
+                <div key={bus.id} className="w-1/12">
+                  <MemoizedBusStrip bus={bus} />
                 </div>
               ))}
             </div>
@@ -400,6 +748,24 @@ export function MixerPanel() {
             Show Output Buses
           </button>
         </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          className={`
+            fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-lg shadow-lg
+            flex items-center gap-2 animate-in slide-in-from-bottom
+            ${toast.type === "success" ? "bg-green-600" : "bg-slate-700"}
+          `}
+        >
+          <span className="text-white font-medium text-sm">{toast.message}</span>
+        </div>
+      )}
+
+      {/* Keyboard Shortcuts Modal */}
+      {showKeyboardShortcuts && (
+        <KeyboardShortcutsModal onClose={() => setShowKeyboardShortcuts(false)} />
       )}
     </div>
   );

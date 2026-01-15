@@ -5,36 +5,43 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
-use troubadour_core::domain::audio::{AudioError, AudioEnumerator, DeviceId, Result, SampleRate};
-use troubadour_core::domain::mixer::MixerEngine;
+use tracing::{debug, error, info, trace, warn};
+use troubadour_core::domain::audio::{AudioError, AudioEnumerator, DeviceId, Result, SampleRate, StreamConfig, ChannelCount};
+use troubadour_core::domain::mixer::{ChannelId, MixerEngine};
 
-use super::RingBuffer;
+use super::stream::AudioStream;
 
 /// Configuration for an audio stream
 #[derive(Debug, Clone)]
-pub struct StreamConfig {
+pub struct EngineStreamConfig {
     pub device_id: DeviceId,
     pub channels: u16,
     pub sample_rate: SampleRate,
     pub buffer_size: u32,
 }
 
-/// Active audio stream with its associated buffers
+/// Active audio stream with routing information
 pub struct ActiveStream {
-    pub ring_buffer: Arc<Mutex<RingBuffer>>,
-    pub config: StreamConfig,
+    pub audio_stream: AudioStream,
+    pub config: EngineStreamConfig,
+    /// Channel IDs that receive audio from this stream
+    pub target_channels: Vec<ChannelId>,
 }
 
 /// Audio engine managing multiple input/output streams
-#[allow(dead_code)] // TODO: Remove once audio streaming is fully implemented
 pub struct AudioEngine {
     enumerator: Arc<dyn AudioEnumerator>,
     mixer: Arc<Mutex<MixerEngine>>,
+    /// Map of device ID to active input stream
     input_streams: HashMap<DeviceId, ActiveStream>,
+    /// Map of device ID to active output stream
     output_streams: HashMap<DeviceId, ActiveStream>,
-    sample_rate: SampleRate,
+    /// Target sample rate for the mixer
+    target_sample_rate: SampleRate,
+    /// Buffer size for streams
     buffer_size: u32,
+    /// Whether the engine is running
+    running: bool,
 }
 
 impl AudioEngine {
@@ -42,7 +49,7 @@ impl AudioEngine {
     pub fn new(
         enumerator: Arc<dyn AudioEnumerator>,
         mixer: Arc<Mutex<MixerEngine>>,
-        sample_rate: SampleRate,
+        target_sample_rate: SampleRate,
         buffer_size: u32,
     ) -> Self {
         Self {
@@ -50,13 +57,138 @@ impl AudioEngine {
             mixer,
             input_streams: HashMap::new(),
             output_streams: HashMap::new(),
-            sample_rate,
+            target_sample_rate,
             buffer_size,
+            running: false,
         }
     }
 
-    /// Start an input stream from the specified device
-    pub fn start_input_stream(&mut self, config: StreamConfig) -> Result<()> {
+    /// Start all input streams based on mixer channel device assignments
+    ///
+    /// This is the key method that implements per-channel audio routing:
+    /// 1. Reads input_device from each mixer channel
+    /// 2. Groups channels by their assigned device
+    /// 3. Creates one AudioInputStream per unique device
+    /// 4. Stores mapping of which channels use each stream
+    pub fn start_channel_streams(&mut self) -> Result<()> {
+        info!("Starting channel streams based on device assignments");
+
+        // Lock mixer to read channel configurations
+        let mixer = self.mixer.lock()
+            .map_err(|e| AudioError::StreamError(format!("Mixer lock error: {}", e)))?;
+
+        // Group channels by their assigned input device
+        let mut device_channels: HashMap<Option<String>, Vec<ChannelId>> = HashMap::new();
+
+        for channel in mixer.channels() {
+            // Skip channels without input device and master channel
+            let device_id = channel.input_device.clone();
+            device_channels
+                .entry(device_id)
+                .or_insert_with(Vec::new)
+                .push(channel.id.clone());
+
+            debug!(
+                "Channel '{}' assigned to device: {:?}",
+                channel.name,
+                channel.input_device
+            );
+        }
+
+        // Drop mixer lock before creating streams (to avoid deadlock)
+        drop(mixer);
+
+        // Get default input device ID for channels with None
+        let default_device_id = self.enumerator
+            .default_input_device()
+            .map(|d| d.id)
+            .ok();
+
+        // Create one stream per unique device
+        let mut stream_count = 0;
+        for (device_id_opt, channel_ids) in device_channels {
+            // Resolve None to default device
+            let device_id = match device_id_opt {
+                Some(id) => DeviceId::new(id),
+                None => {
+                    match &default_device_id {
+                        Some(default_id) => default_id.clone(),
+                        None => {
+                            warn!("No default input device available, skipping channels: {:?}", channel_ids);
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // Get device info to determine supported config
+            let device_info = self.enumerator
+                .input_devices()
+                .map_err(|e| AudioError::StreamError(e.to_string()))?
+                .into_iter()
+                .find(|d| d.id == device_id)
+                .ok_or_else(|| AudioError::DeviceNotFound(format!(
+                    "Input device not found: {}",
+                    device_id.as_str()
+                )))?;
+
+            info!(
+                "Creating input stream for device '{}' ({} channels)",
+                device_info.name,
+                channel_ids.len()
+            );
+
+            // Create stream config
+            let stream_config = StreamConfig {
+                sample_rate: self.target_sample_rate,
+                channels: ChannelCount::Stereo, // TODO: Use device's preferred channel count
+                format: troubadour_core::domain::audio::SampleFormat::F32,
+                buffer_size: self.buffer_size,
+            };
+
+            // Create the actual CPAL audio stream
+            let audio_stream = AudioStream::create_input_stream(
+                &device_id,
+                &stream_config,
+                self.target_sample_rate,
+            ).map_err(|e| {
+                error!("Failed to create input stream for {}: {}", device_id.as_str(), e);
+                e
+            })?;
+
+            // Store stream with target channel mapping
+            let active_stream = ActiveStream {
+                audio_stream,
+                config: EngineStreamConfig {
+                    device_id: device_id.clone(),
+                    channels: 2, // Stereo
+                    sample_rate: self.target_sample_rate,
+                    buffer_size: self.buffer_size,
+                },
+                target_channels: channel_ids.clone(),
+            };
+
+            self.input_streams.insert(device_id.clone(), active_stream);
+            stream_count += 1;
+
+            debug!(
+                "Created stream for device '{}' serving {} channels: {:?}",
+                device_id.as_str(),
+                channel_ids.len(),
+                channel_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>()
+            );
+        }
+
+        self.running = true;
+        info!("Started {} input streams", stream_count);
+        Ok(())
+    }
+
+    /// Start an input stream from the specified device (legacy method)
+    ///
+    /// Note: Use start_channel_streams() for automatic per-channel routing
+    #[deprecated(note = "Use start_channel_streams() for per-channel device routing")]
+    pub fn start_input_stream(&mut self, config: EngineStreamConfig) -> Result<()> {
         info!(
             "Starting input stream: device={}, channels={}, rate={:?}",
             config.device_id.as_str(),
@@ -64,39 +196,35 @@ impl AudioEngine {
             config.sample_rate
         );
 
-        // Get the device info
-        let devices = self.enumerator.input_devices()
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
+        // Create stream config
+        let stream_config = StreamConfig {
+            sample_rate: config.sample_rate,
+            channels: ChannelCount::Stereo,
+            format: troubadour_core::domain::audio::SampleFormat::F32,
+            buffer_size: config.buffer_size,
+        };
 
-        let device_info = devices
-            .into_iter()
-            .find(|d| d.id.as_str() == config.device_id.as_str())
-            .ok_or_else(|| AudioError::DeviceNotFound(format!(
-                "Device {} not found",
-                config.device_id.as_str()
-            )))?;
-
-        info!("Found device: {}", device_info.name);
-
-        // Create ring buffer for audio data
-        let ring_buffer = Arc::new(Mutex::new(RingBuffer::with_capacity(
-            self.buffer_size as usize * config.channels as usize * 4, // 4x buffer for safety
-        )));
+        // Create the actual CPAL audio stream
+        let audio_stream = AudioStream::create_input_stream(
+            &config.device_id,
+            &stream_config,
+            self.target_sample_rate,
+        )?;
 
         let active_stream = ActiveStream {
-            ring_buffer,
+            audio_stream,
             config: config.clone(),
+            target_channels: Vec::new(), // No specific channels for legacy method
         };
 
         self.input_streams.insert(config.device_id.clone(), active_stream);
-
-        warn!("Input stream creation not fully implemented - needs CPAL integration for actual streaming");
+        self.running = true;
 
         Ok(())
     }
 
     /// Start an output stream to the specified device
-    pub fn start_output_stream(&mut self, config: StreamConfig) -> Result<()> {
+    pub fn start_output_stream(&mut self, config: EngineStreamConfig) -> Result<()> {
         info!(
             "Starting output stream: device={}, channels={}, rate={:?}",
             config.device_id.as_str(),
@@ -104,31 +232,28 @@ impl AudioEngine {
             config.sample_rate
         );
 
-        // Get the device info
-        let devices = self.enumerator.output_devices()
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
+        // Create stream config
+        let stream_config = StreamConfig {
+            sample_rate: config.sample_rate,
+            channels: ChannelCount::Stereo,
+            format: troubadour_core::domain::audio::SampleFormat::F32,
+            buffer_size: config.buffer_size,
+        };
 
-        let _device_info = devices
-            .into_iter()
-            .find(|d| d.id.as_str() == config.device_id.as_str())
-            .ok_or_else(|| AudioError::DeviceNotFound(format!(
-                "Device {} not found",
-                config.device_id.as_str()
-            )))?;
-
-        // Create ring buffer for audio data
-        let ring_buffer = Arc::new(Mutex::new(RingBuffer::with_capacity(
-            self.buffer_size as usize * config.channels as usize * 4,
-        )));
+        // Create the actual CPAL audio stream
+        let audio_stream = AudioStream::create_output_stream(
+            &config.device_id,
+            &stream_config,
+            self.target_sample_rate,
+        )?;
 
         let active_stream = ActiveStream {
-            ring_buffer,
+            audio_stream,
             config: config.clone(),
+            target_channels: Vec::new(),
         };
 
         self.output_streams.insert(config.device_id.clone(), active_stream);
-
-        warn!("Output stream creation not fully implemented - needs CPAL integration for actual streaming");
 
         Ok(())
     }
@@ -159,6 +284,11 @@ impl AudioEngine {
         }
     }
 
+    /// Check if the engine is currently running
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
     /// Get all active input stream device IDs
     pub fn active_input_streams(&self) -> Vec<DeviceId> {
         self.input_streams.keys().cloned().collect()
@@ -170,13 +300,98 @@ impl AudioEngine {
     }
 
     /// Process audio through the mixer
+    ///
+    /// This method routes audio from input streams to their assigned channels:
+    /// 1. Reads audio data from each input stream
+    /// 2. Distributes audio to all channels using that device
+    /// 3. Processes through mixer engine
+    /// 4. Updates channel level meters
     pub fn process_audio(&mut self) -> Result<()> {
-        // This would be called periodically to:
-        // 1. Read from input ring buffers
-        // 2. Process through mixer engine
-        // 3. Write to output ring buffers
+        if !self.running {
+            return Ok(());
+        }
 
-        // For now, this is a placeholder
+        // Collect audio from all input streams and route to channels
+        let mut channel_audio: HashMap<ChannelId, Vec<f32>> = HashMap::new();
+
+        for (device_id, active_stream) in &self.input_streams {
+            // Try to receive audio from this stream
+            match active_stream.audio_stream.receive() {
+                Ok(Some(audio_buffer)) => {
+                    debug!(
+                        "Received {} samples from device '{}'",
+                        audio_buffer.len(),
+                        device_id.as_str()
+                    );
+
+                    // Distribute this audio to all channels using this device
+                    for channel_id in &active_stream.target_channels {
+                        // Clone audio buffer for each channel (they may process independently)
+                        channel_audio.insert(channel_id.clone(), audio_buffer.clone());
+                    }
+                }
+                Ok(None) => {
+                    // No audio data available this frame (non-blocking)
+                    trace!("No audio data available from device '{}'", device_id.as_str());
+                }
+                Err(e) => {
+                    error!("Error receiving audio from device '{}': {}", device_id.as_str(), e);
+                }
+            }
+        }
+
+        // Process audio through mixer if we have data
+        if !channel_audio.is_empty() {
+            let mut mixer = self.mixer.lock()
+                .map_err(|e| AudioError::StreamError(format!("Mixer lock error: {}", e)))?;
+
+            // Update channel level meters
+            for (channel_id, audio_buffer) in &channel_audio {
+                if let Some(channel) = mixer.channel_mut(channel_id) {
+                    // Update level meter with RMS of buffer
+                    let rms = (audio_buffer.iter().map(|&s| s * s).sum::<f32>() / audio_buffer.len() as f32).sqrt();
+                    channel.update_level(rms);
+                }
+            }
+
+            // Process through mixer (apply routing, gain, effects, etc.)
+            let outputs = mixer.process_with_effects(&channel_audio, &mut HashMap::new());
+
+            // TODO: Send outputs to output streams
+            let _ = outputs; // Suppress unused warning for now
+        }
+
+        Ok(())
+    }
+
+    /// Refresh streams when channel device assignments change
+    ///
+    /// Call this after modifying channel input_device assignments to restart
+    /// streams with the new routing configuration.
+    pub fn refresh_streams(&mut self) -> Result<()> {
+        info!("Refreshing audio streams due to device assignment changes");
+
+        // Stop all existing streams
+        self.stop_all_streams()?;
+
+        // Restart with new configuration
+        self.start_channel_streams()?;
+
+        Ok(())
+    }
+
+    /// Stop all input streams
+    fn stop_all_streams(&mut self) -> Result<()> {
+        info!("Stopping all input streams");
+
+        let device_ids: Vec<_> = self.input_streams.keys().cloned().collect();
+        for device_id in device_ids {
+            if let Some(_stream) = self.input_streams.remove(&device_id) {
+                debug!("Stopped stream for device '{}'", device_id.as_str());
+            }
+        }
+
+        self.running = false;
         Ok(())
     }
 }
@@ -185,12 +400,10 @@ impl Drop for AudioEngine {
     fn drop(&mut self) {
         info!("Shutting down audio engine");
         // Stop all streams
-        let input_ids: Vec<_> = self.active_input_streams();
-        for id in input_ids {
-            let _ = self.stop_input_stream(&id);
-        }
+        let _ = self.stop_all_streams();
 
-        let output_ids: Vec<_> = self.active_output_streams();
+        // Stop output streams too
+        let output_ids: Vec<_> = self.output_streams.keys().cloned().collect();
         for id in output_ids {
             let _ = self.stop_output_stream(&id);
         }

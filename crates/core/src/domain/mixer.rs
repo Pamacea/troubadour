@@ -119,6 +119,8 @@ pub struct MixerChannel {
     pub level: AudioLevel,
     /// Effects chain configuration for this channel
     pub effects: crate::domain::dsp::EffectsChain,
+    /// Input device ID for this channel (None = use default input)
+    pub input_device: Option<String>,
 }
 
 impl MixerChannel {
@@ -131,6 +133,7 @@ impl MixerChannel {
             solo: false,
             level: AudioLevel::new(),
             effects: crate::domain::dsp::EffectsChain::new(),
+            input_device: None,
         }
     }
 
@@ -177,6 +180,20 @@ impl MixerChannel {
     /// Update level meter
     pub fn update_level(&mut self, sample: f32) {
         self.level.update(sample);
+    }
+
+    /// Set the input device for this channel
+    pub fn set_input_device(&mut self, device_id: Option<String>) {
+        self.input_device = device_id;
+        debug!(
+            "Channel {} input device set to: {:?}",
+            self.name, self.input_device
+        );
+    }
+
+    /// Get the input device for this channel
+    pub fn get_input_device(&self) -> Option<&str> {
+        self.input_device.as_deref()
     }
 }
 
@@ -258,19 +275,170 @@ impl Default for RoutingMatrix {
 pub struct MixerEngine {
     channels: HashMap<ChannelId, MixerChannel>,
     routing: RoutingMatrix,
+    buses: Vec<Bus>,
 
     // Performance optimization: cache-friendly channel list
     #[serde(skip)]
     channel_order: Vec<ChannelId>,
+
+    // Track which channel has solo (for exclusive solo behavior)
+    soloed_channel_id: Option<ChannelId>,
 }
 
 impl MixerEngine {
+    pub const MIN_BUSES: usize = 2;
+    pub const MAX_BUSES: usize = 5;
+
     pub fn new() -> Self {
         Self {
             channels: HashMap::new(),
             routing: RoutingMatrix::new(),
+            buses: Self::create_default_buses(),
             channel_order: Vec::new(),
+            soloed_channel_id: None,
         }
+    }
+
+    /// Create default bus system (A1-A2 for outputs, minimum 2 buses)
+    fn create_default_buses() -> Vec<Bus> {
+        vec![
+            // Output buses (A1, A2) - minimum 2 buses
+            Bus::standard(StandardBus::A1),
+            Bus::standard(StandardBus::A2),
+        ]
+    }
+
+    /// Add a new bus to the mixer (up to MAX_BUSES)
+    ///
+    /// Returns Ok(bus_id) if successful, Err if already at maximum
+    pub fn add_bus(&mut self) -> Result<BusId> {
+        if self.buses.len() >= Self::MAX_BUSES {
+            return Err(AudioError::InvalidConfiguration(
+                format!("Maximum bus limit reached ({})", Self::MAX_BUSES)
+            ));
+        }
+
+        // Auto-generate next bus ID (A1, A2, A3, A4, A5)
+        let next_bus_num = self.buses.len() + 1;
+        let bus_id = match next_bus_num {
+            1 => StandardBus::A1,
+            2 => StandardBus::A2,
+            3 => StandardBus::A3,
+            4 => StandardBus::A4,
+            5 => StandardBus::A5,
+            _ => return Err(AudioError::InvalidConfiguration("Invalid bus number".to_string())),
+        };
+
+        let bus = Bus::standard(bus_id);
+        let id = bus.id.clone();
+
+        debug!("Adding bus: {}", id.as_str());
+        self.buses.push(bus);
+
+        Ok(id)
+    }
+
+    /// Remove the last bus from the mixer (minimum MIN_BUSES)
+    ///
+    /// Returns Ok(bus_id) if successful, Err if already at minimum
+    pub fn remove_bus(&mut self) -> Result<BusId> {
+        if self.buses.len() <= Self::MIN_BUSES {
+            return Err(AudioError::InvalidConfiguration(
+                format!("Minimum bus limit reached ({})", Self::MIN_BUSES)
+            ));
+        }
+
+        let removed_bus = self.buses.pop()
+            .ok_or_else(|| AudioError::InvalidConfiguration("No bus to remove".to_string()))?;
+
+        let bus_id = removed_bus.id.clone();
+
+        // Remove all routes to/from this bus
+        let bus_channel_id = ChannelId::new(bus_id.as_str().to_string());
+        self.routing
+            .routes
+            .retain(|(from, to), _| from != &bus_channel_id && to != &bus_channel_id);
+
+        debug!("Removing bus: {}", bus_id.as_str());
+
+        Ok(bus_id)
+    }
+
+    /// Get the current number of buses
+    pub fn bus_count(&self) -> usize {
+        self.buses.len()
+    }
+
+    /// Get all buses
+    pub fn buses(&self) -> &[Bus] {
+        &self.buses
+    }
+
+    /// Get a mutable reference to a bus
+    pub fn bus_mut(&mut self, bus_id: &BusId) -> Option<&mut Bus> {
+        self.buses.iter_mut().find(|b| &b.id == bus_id)
+    }
+
+    /// Get buses assigned to a specific channel
+    pub fn get_channel_buses(&self, channel_id: &ChannelId) -> Vec<BusId> {
+        // Convert bus IDs to channel IDs for routing lookup
+        self.routing
+            .get_outputs(channel_id)
+            .into_iter()
+            .filter(|id| {
+                // Check if this channel ID corresponds to a bus
+                self.buses.iter().any(|b| b.id.as_str() == id.as_str())
+            })
+            .map(|id| BusId::new(id.as_str().to_string()))
+            .collect()
+    }
+
+    /// Set which buses a channel is routed to
+    pub fn set_channel_buses(&mut self, channel_id: &ChannelId, bus_ids: Vec<BusId>) {
+        // First, clear all existing routes to any bus
+        for bus in &self.buses {
+            let bus_channel_id = ChannelId::new(bus.id.as_str().to_string());
+            self.routing.set_route(channel_id, &bus_channel_id, false);
+        }
+
+        // Then enable the selected buses
+        for bus_id in &bus_ids {
+            let bus_channel_id = ChannelId::new(bus_id.as_str().to_string());
+            self.routing.set_route(channel_id, &bus_channel_id, true);
+        }
+
+        debug!(
+            "Channel {} routed to buses: {:?}",
+            channel_id.as_str(),
+            bus_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Set the output device for a bus
+    pub fn set_bus_output_device(
+        &mut self,
+        bus_id: &BusId,
+        device_id: Option<crate::domain::audio::DeviceId>,
+    ) -> Result<()> {
+        let bus = self
+            .bus_mut(bus_id)
+            .ok_or_else(|| AudioError::DeviceNotFound(bus_id.as_str().to_string()))?;
+
+        bus.output_device = device_id;
+        debug!(
+            "Bus {} output device set to: {:?}",
+            bus_id.as_str(),
+            bus.output_device.as_ref().map(|d| d.as_str())
+        );
+        Ok(())
+    }
+
+    /// Get the output device for a bus
+    pub fn get_bus_output_device(&self, bus_id: &BusId) -> Option<crate::domain::audio::DeviceId> {
+        self.buses
+            .iter()
+            .find(|b| &b.id == bus_id)
+            .and_then(|b| b.output_device.clone())
     }
 
     /// Add a new channel
@@ -320,6 +488,34 @@ impl MixerEngine {
     /// Get routing matrix mutable reference
     pub fn routing_mut(&mut self) -> &mut RoutingMatrix {
         &mut self.routing
+    }
+
+    /// Set solo state for a channel with exclusive behavior
+    ///
+    /// When solo is activated on a channel, all other channels are automatically unsoloed.
+    /// When solo is deactivated on the soloed channel, all channels return to normal state.
+    ///
+    /// This implements standard mixer behavior where solo is exclusive.
+    pub fn set_channel_solo_exclusive(&mut self, channel_id: &ChannelId, solo_state: bool) -> Result<()> {
+        if solo_state {
+            // Solo this channel, unsolo all others
+            for channel in self.channels.values_mut() {
+                channel.solo = channel.id == *channel_id;
+            }
+            self.soloed_channel_id = Some(channel_id.clone());
+            debug!("Channel {} soloed exclusively", channel_id.as_str());
+        } else {
+            // Unsolo this channel if it's the soloed one
+            if self.soloed_channel_id.as_ref() == Some(channel_id) {
+                self.soloed_channel_id = None;
+                debug!("Solo cleared from all channels");
+            }
+            if let Some(channel) = self.channels.get_mut(channel_id) {
+                channel.solo = false;
+                debug!("Channel {} unsoloed", channel_id.as_str());
+            }
+        }
+        Ok(())
     }
 
     /// Mix audio samples from all input channels to all output channels
@@ -405,6 +601,24 @@ impl MixerEngine {
                     .for_each(|(out, &sample)| {
                         *out += sample * gain;
                     });
+            }
+        }
+
+        // Apply bus gain to all outputs
+        // This applies bus volume and mute to the mixed audio
+        for (output_id, output_buffer) in outputs.iter_mut() {
+            // Check if this output corresponds to a bus
+            if let Some(bus) = self.buses.iter().find(|b| b.id.as_str() == output_id.as_str()) {
+                let bus_gain = bus.gain();
+                if bus_gain == 0.0 {
+                    // Bus is muted, zero out the buffer
+                    output_buffer.fill(0.0);
+                } else {
+                    // Apply bus gain
+                    output_buffer.iter_mut().for_each(|sample| {
+                        *sample *= bus_gain;
+                    });
+                }
             }
         }
 
@@ -578,5 +792,483 @@ mod tests {
 
         level.decay_peak(3.0);
         assert_eq!(level.peak_db, -3.0);
+    }
+
+    // ========================================================================
+    // ADDITIONAL COMPREHENSIVE TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_volume_extreme_values() {
+        let vol = VolumeDecibels::new(-100.0);
+        assert_eq!(vol.db(), -60.0);
+        assert_eq!(vol.to_amplitude(), 0.0);
+
+        let vol = VolumeDecibels::new(100.0);
+        assert_eq!(vol.db(), 6.0);
+        assert!(vol.to_amplitude() > 1.0);
+    }
+
+    #[test]
+    fn test_volume_roundtrip() {
+        let test_values = [-60.0, -40.0, -20.0, -6.0, 0.0, 3.0, 6.0];
+
+        for db in test_values {
+            let vol = VolumeDecibels::new(db);
+            let amplitude = vol.to_amplitude();
+            let recovered = VolumeDecibels::from_amplitude(amplitude);
+
+            if db <= -60.0 {
+                assert_eq!(recovered.db(), -60.0);
+            } else {
+                assert!((recovered.db() - db).abs() < 0.1, "Failed for {} dB", db);
+            }
+        }
+    }
+
+    #[test]
+    fn test_channel_solo_isolation() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+        let ch2 = ChannelId::new("ch2".to_string());
+        let ch3 = ChannelId::new("ch3".to_string());
+        let out = ChannelId::new("A1".to_string());
+
+        engine.add_channel(MixerChannel::new(ch1.clone(), "1".to_string()));
+        engine.add_channel(MixerChannel::new(ch2.clone(), "2".to_string()));
+        engine.add_channel(MixerChannel::new(ch3.clone(), "3".to_string()));
+
+        // Solo ch2 only
+        engine.channel_mut(&ch2).unwrap().solo = true;
+
+        engine.routing_mut().set_route(&ch1, &out, true);
+        engine.routing_mut().set_route(&ch2, &out, true);
+        engine.routing_mut().set_route(&ch3, &out, true);
+
+        let mut inputs = HashMap::new();
+        inputs.insert(ch1.clone(), vec![1.0; 100]);
+        inputs.insert(ch2.clone(), vec![1.0; 100]);
+        inputs.insert(ch3.clone(), vec![1.0; 100]);
+
+        let outputs = engine.process(&inputs);
+        let output = outputs.get(&out).unwrap();
+
+        // Only ch2 should be audible
+        assert!((output[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_multiple_solo_channels() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+        let ch2 = ChannelId::new("ch2".to_string());
+        let out = ChannelId::new("A1".to_string());
+
+        engine.add_channel(MixerChannel::new(ch1.clone(), "1".to_string()));
+        engine.add_channel(MixerChannel::new(ch2.clone(), "2".to_string()));
+
+        // Solo both
+        engine.channel_mut(&ch1).unwrap().solo = true;
+        engine.channel_mut(&ch2).unwrap().solo = true;
+
+        engine.routing_mut().set_route(&ch1, &out, true);
+        engine.routing_mut().set_route(&ch2, &out, true);
+
+        let mut inputs = HashMap::new();
+        inputs.insert(ch1.clone(), vec![0.5; 100]);
+        inputs.insert(ch2.clone(), vec![0.3; 100]);
+
+        let outputs = engine.process(&inputs);
+        let output = outputs.get(&out).unwrap();
+
+        // Both should be mixed
+        assert!((output[0] - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_mute_with_solo() {
+        let mut channel = MixerChannel::new(
+            ChannelId::new("test".to_string()),
+            "Test".to_string(),
+        );
+
+        // Solo but also muted
+        channel.solo = true;
+        channel.muted = true;
+
+        // Mute should take precedence
+        assert!(!channel.is_audible(true));
+        assert!(!channel.is_audible(false));
+    }
+
+    #[test]
+    fn test_volume_affects_gain() {
+        let mut channel = MixerChannel::new(
+            ChannelId::new("test".to_string()),
+            "Test".to_string(),
+        );
+
+        // Test various volumes
+        let test_cases = [
+            (-6.0, 0.501),   // -6dB ≈ 0.5
+            (-20.0, 0.1),    // -20dB ≈ 0.1
+            (0.0, 1.0),      // Unity
+            (6.0, 1.995),    // +6dB ≈ 2.0
+        ];
+
+        for (db, expected_amp) in test_cases {
+            channel.set_volume(db);
+            let output = channel.apply_gain(1.0);
+            assert!((output - expected_amp).abs() < 0.01, "Failed for {} dB", db);
+        }
+    }
+
+    #[test]
+    fn test_routing_complex_scenarios() {
+        let mut matrix = RoutingMatrix::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+        let a1 = ChannelId::new("A1".to_string());
+        let a2 = ChannelId::new("A2".to_string());
+        let a3 = ChannelId::new("A3".to_string());
+
+        // Route to multiple outputs
+        matrix.set_route(&ch1, &a1, true);
+        matrix.set_route(&ch1, &a2, true);
+        matrix.set_route(&ch1, &a3, true);
+
+        let outputs = matrix.get_outputs(&ch1);
+        assert_eq!(outputs.len(), 3);
+        assert!(outputs.contains(&a1));
+        assert!(outputs.contains(&a2));
+        assert!(outputs.contains(&a3));
+
+        // Disable one
+        matrix.set_route(&ch1, &a2, false);
+        let outputs = matrix.get_outputs(&ch1);
+        assert_eq!(outputs.len(), 2);
+        assert!(!outputs.contains(&a2));
+    }
+
+    #[test]
+    fn test_bus_system() {
+        let engine = MixerEngine::new();
+        let buses = engine.buses();
+
+        // Should have 2 default buses (minimum)
+        assert_eq!(buses.len(), 2);
+        assert_eq!(buses[0].id.as_str(), "A1");
+        assert_eq!(buses[1].id.as_str(), "A2");
+    }
+
+    #[test]
+    fn test_channel_operations() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+
+        // Add channel
+        engine.add_channel(MixerChannel::new(ch1.clone(), "Test".to_string()));
+        assert!(engine.channel(&ch1).is_some());
+        assert_eq!(engine.channels().count(), 1);
+
+        // Remove channel
+        engine.remove_channel(&ch1).unwrap();
+        assert!(engine.channel(&ch1).is_none());
+        assert_eq!(engine.channels().count(), 0);
+
+        // Remove non-existent should error
+        let result = engine.remove_channel(&ch1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_audio_level_clamping() {
+        let mut level = AudioLevel::new();
+
+        // Silence
+        level.update(0.0);
+        assert_eq!(level.current_db, AudioLevel::MIN_LEVEL);
+
+        // Full scale
+        level.update(1.0);
+        assert_eq!(level.current_db, AudioLevel::MAX_LEVEL);
+
+        // Beyond full scale (should clamp)
+        level.update(2.0);
+        assert_eq!(level.current_db, AudioLevel::MAX_LEVEL);
+    }
+
+    #[test]
+    fn test_audio_level_peak_behavior() {
+        let mut level = AudioLevel::new();
+
+        // Start with silence
+        level.update(0.0);
+        assert_eq!(level.peak_db, AudioLevel::MIN_LEVEL);
+
+        // Hit full scale
+        level.update(1.0);
+        assert_eq!(level.peak_db, 0.0);
+
+        // Lower signal
+        level.update(0.1);
+        assert!((level.current_db - (-20.0)).abs() < 1.0);
+        assert_eq!(level.peak_db, 0.0); // Peak should remain
+
+        // Decay peak
+        level.decay_peak(5.0);
+        assert_eq!(level.peak_db, -5.0);
+    }
+
+    #[test]
+    fn test_bus_assignment() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+        engine.add_channel(MixerChannel::new(ch1.clone(), "Test".to_string()));
+
+        // Assign to bus A1
+        let bus_a1 = BusId::new("A1".to_string());
+        engine.set_channel_buses(&ch1, vec![bus_a1.clone()]);
+
+        let buses = engine.get_channel_buses(&ch1);
+        assert_eq!(buses.len(), 1);
+        assert_eq!(buses[0].as_str(), "A1");
+
+        // Assign to multiple buses (add A3 first since it doesn't exist by default)
+        let bus_a3 = engine.add_bus().unwrap();
+        let bus_a2 = BusId::new("A2".to_string());
+        engine.set_channel_buses(&ch1, vec![bus_a1.clone(), bus_a2, bus_a3]);
+
+        let buses = engine.get_channel_buses(&ch1);
+        assert_eq!(buses.len(), 3);
+    }
+
+    #[test]
+    fn test_exclusive_solo_behavior() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+        let ch2 = ChannelId::new("ch2".to_string());
+        let ch3 = ChannelId::new("ch3".to_string());
+
+        engine.add_channel(MixerChannel::new(ch1.clone(), "Channel 1".to_string()));
+        engine.add_channel(MixerChannel::new(ch2.clone(), "Channel 2".to_string()));
+        engine.add_channel(MixerChannel::new(ch3.clone(), "Channel 3".to_string()));
+
+        // Initially, no channels are soloed
+        assert!(!engine.channel(&ch1).unwrap().solo);
+        assert!(!engine.channel(&ch2).unwrap().solo);
+        assert!(!engine.channel(&ch3).unwrap().solo);
+
+        // Solo ch1 - should unsolo all others
+        engine.set_channel_solo_exclusive(&ch1, true).unwrap();
+        assert!(engine.channel(&ch1).unwrap().solo);
+        assert!(!engine.channel(&ch2).unwrap().solo);
+        assert!(!engine.channel(&ch3).unwrap().solo);
+
+        // Solo ch2 - should unsolo ch1 and ch3
+        engine.set_channel_solo_exclusive(&ch2, true).unwrap();
+        assert!(!engine.channel(&ch1).unwrap().solo);
+        assert!(engine.channel(&ch2).unwrap().solo);
+        assert!(!engine.channel(&ch3).unwrap().solo);
+
+        // Unsolo ch2 - all should be unsoloed
+        engine.set_channel_solo_exclusive(&ch2, false).unwrap();
+        assert!(!engine.channel(&ch1).unwrap().solo);
+        assert!(!engine.channel(&ch2).unwrap().solo);
+        assert!(!engine.channel(&ch3).unwrap().solo);
+    }
+
+    #[test]
+    fn test_exclusive_solo_with_processing() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+        let ch2 = ChannelId::new("ch2".to_string());
+        let out = ChannelId::new("A1".to_string());
+
+        engine.add_channel(MixerChannel::new(ch1.clone(), "1".to_string()));
+        engine.add_channel(MixerChannel::new(ch2.clone(), "2".to_string()));
+
+        // Route both to output
+        engine.routing_mut().set_route(&ch1, &out, true);
+        engine.routing_mut().set_route(&ch2, &out, true);
+
+        let mut inputs = HashMap::new();
+        inputs.insert(ch1.clone(), vec![1.0; 100]);
+        inputs.insert(ch2.clone(), vec![1.0; 100]);
+
+        // Both channels playing (no solo)
+        let outputs = engine.process(&inputs);
+        let output = outputs.get(&out).unwrap();
+        assert!((output[0] - 2.0).abs() < 0.01); // Both mixed
+
+        // Solo ch1 - only ch1 should be audible
+        engine.set_channel_solo_exclusive(&ch1, true).unwrap();
+        let outputs = engine.process(&inputs);
+        let output = outputs.get(&out).unwrap();
+        assert!((output[0] - 1.0).abs() < 0.01); // Only ch1
+
+        // Solo ch2 - only ch2 should be audible
+        engine.set_channel_solo_exclusive(&ch2, true).unwrap();
+        let outputs = engine.process(&inputs);
+        let output = outputs.get(&out).unwrap();
+        assert!((output[0] - 1.0).abs() < 0.01); // Only ch2
+
+        // Unsolo - both should be audible again
+        engine.set_channel_solo_exclusive(&ch2, false).unwrap();
+        let outputs = engine.process(&inputs);
+        let output = outputs.get(&out).unwrap();
+        assert!((output[0] - 2.0).abs() < 0.01); // Both mixed
+    }
+
+    // ========================================================================
+    // BUS MANAGEMENT TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_default_bus_count() {
+        let engine = MixerEngine::new();
+        assert_eq!(engine.bus_count(), 2);
+        assert_eq!(engine.buses().len(), 2);
+    }
+
+    #[test]
+    fn test_add_bus_increases_count() {
+        let mut engine = MixerEngine::new();
+        assert_eq!(engine.bus_count(), 2);
+
+        let bus_id = engine.add_bus().unwrap();
+        assert_eq!(bus_id.as_str(), "A3");
+        assert_eq!(engine.bus_count(), 3);
+    }
+
+    #[test]
+    fn test_add_multiple_buses() {
+        let mut engine = MixerEngine::new();
+
+        // Add 3 buses (should reach max of 5)
+        let bus3 = engine.add_bus().unwrap();
+        assert_eq!(bus3.as_str(), "A3");
+        assert_eq!(engine.bus_count(), 3);
+
+        let bus4 = engine.add_bus().unwrap();
+        assert_eq!(bus4.as_str(), "A4");
+        assert_eq!(engine.bus_count(), 4);
+
+        let bus5 = engine.add_bus().unwrap();
+        assert_eq!(bus5.as_str(), "A5");
+        assert_eq!(engine.bus_count(), 5);
+    }
+
+    #[test]
+    fn test_add_bus_beyond_limit() {
+        let mut engine = MixerEngine::new();
+
+        // Add up to max (5 buses)
+        let _ = engine.add_bus().unwrap();
+        let _ = engine.add_bus().unwrap();
+        let _ = engine.add_bus().unwrap();
+
+        assert_eq!(engine.bus_count(), 5);
+
+        // Should fail to add beyond limit
+        let result = engine.add_bus();
+        assert!(result.is_err());
+        assert_eq!(engine.bus_count(), 5); // Count unchanged
+    }
+
+    #[test]
+    fn test_remove_bus_decreases_count() {
+        let mut engine = MixerEngine::new();
+
+        // First add a bus so we have 3
+        let _ = engine.add_bus().unwrap();
+        assert_eq!(engine.bus_count(), 3);
+
+        // Remove one
+        let removed_id = engine.remove_bus().unwrap();
+        assert_eq!(removed_id.as_str(), "A3");
+        assert_eq!(engine.bus_count(), 2);
+    }
+
+    #[test]
+    fn test_remove_bus_below_minimum() {
+        let mut engine = MixerEngine::new();
+        assert_eq!(engine.bus_count(), 2);
+
+        // Should fail to remove below minimum
+        let result = engine.remove_bus();
+        assert!(result.is_err());
+        assert_eq!(engine.bus_count(), 2); // Count unchanged
+    }
+
+    #[test]
+    fn test_bus_auto_naming() {
+        let mut engine = MixerEngine::new();
+
+        // Check default buses
+        let buses = engine.buses();
+        assert_eq!(buses[0].id.as_str(), "A1");
+        assert_eq!(buses[1].id.as_str(), "A2");
+
+        // Add buses and check names
+        let _ = engine.add_bus().unwrap();
+        let _ = engine.add_bus().unwrap();
+        let _ = engine.add_bus().unwrap();
+
+        let buses = engine.buses();
+        assert_eq!(buses[2].id.as_str(), "A3");
+        assert_eq!(buses[3].id.as_str(), "A4");
+        assert_eq!(buses[4].id.as_str(), "A5");
+    }
+
+    #[test]
+    fn test_remove_bus_clears_routing() {
+        let mut engine = MixerEngine::new();
+        let ch1 = ChannelId::new("ch1".to_string());
+
+        engine.add_channel(MixerChannel::new(ch1.clone(), "Channel 1".to_string()));
+
+        // Add a third bus
+        let bus_a3 = engine.add_bus().unwrap();
+        assert_eq!(bus_a3.as_str(), "A3");
+
+        // Route channel to A3
+        let bus_channel_id = ChannelId::new(bus_a3.as_str().to_string());
+        engine.routing_mut().set_route(&ch1, &bus_channel_id, true);
+
+        // Verify route exists
+        assert!(engine.routing().is_routed(&ch1, &bus_channel_id));
+
+        // Remove the bus
+        let removed = engine.remove_bus().unwrap();
+        assert_eq!(removed.as_str(), "A3");
+
+        // Route should be cleared
+        assert!(!engine.routing().is_routed(&ch1, &bus_channel_id));
+    }
+
+    #[test]
+    fn test_bus_limits_const() {
+        assert_eq!(MixerEngine::MIN_BUSES, 2);
+        assert_eq!(MixerEngine::MAX_BUSES, 5);
+    }
+
+    #[test]
+    fn test_dynamic_bus_range() {
+        let mut engine = MixerEngine::new();
+
+        // Start at minimum
+        assert_eq!(engine.bus_count(), MixerEngine::MIN_BUSES);
+
+        // Add to maximum
+        for _ in 0..(MixerEngine::MAX_BUSES - MixerEngine::MIN_BUSES) {
+            engine.add_bus().unwrap();
+        }
+        assert_eq!(engine.bus_count(), MixerEngine::MAX_BUSES);
+
+        // Remove back to minimum
+        for _ in 0..(MixerEngine::MAX_BUSES - MixerEngine::MIN_BUSES) {
+            engine.remove_bus().unwrap();
+        }
+        assert_eq!(engine.bus_count(), MixerEngine::MIN_BUSES);
     }
 }

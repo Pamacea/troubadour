@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { VolumeFader } from "./VolumeFader";
 
 interface DeviceInfo {
   id: string;
@@ -23,14 +24,17 @@ interface BusStripProps {
 export function BusStrip({ bus }: BusStripProps) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string | null>(bus.output_device);
+  const [localVolume, setLocalVolume] = useState(bus.volume_db);
+  const [isMuted, setIsMuted] = useState(bus.muted);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Load output devices on mount
+  // Update local volume when bus volume changes (but not during user interaction)
   useEffect(() => {
-    loadOutputDevices();
-  }, []);
+    setLocalVolume(bus.volume_db);
+  }, [bus.volume_db]);
 
-  async function loadOutputDevices() {
+  // Load output devices on mount - memoized
+  const loadOutputDevices = useCallback(async () => {
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         const result = await invoke<DeviceInfo[]>("list_output_devices");
@@ -47,9 +51,14 @@ export function BusStrip({ bus }: BusStripProps) {
     } catch (error) {
       console.error("Failed to load output devices:", error);
     }
-  }
+  }, []);
 
-  async function handleDeviceChange(deviceId: string) {
+  useEffect(() => {
+    loadOutputDevices();
+  }, [loadOutputDevices]);
+
+  // Memoized handleDeviceChange
+  const handleDeviceChange = useCallback(async (deviceId: string) => {
     setIsLoading(true);
     const newDevice = deviceId === "none" ? null : deviceId;
 
@@ -69,7 +78,55 @@ export function BusStrip({ bus }: BusStripProps) {
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [bus.id]);
+
+  // Memoized handleVolumeChange
+  const handleVolumeChange = useCallback(async (newVolume: number) => {
+    // Update local state immediately for responsive UI
+    setLocalVolume(newVolume);
+
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("set_bus_volume", {
+          busId: bus.id,
+          volumeDb: newVolume,
+        });
+      } else {
+        console.log(`Mock: Set bus ${bus.id} volume to`, newVolume);
+      }
+    } catch (error) {
+      console.error("Failed to set bus volume:", error);
+      // Revert on error
+      setLocalVolume(bus.volume_db);
+    }
+    // No delay needed - local state is authoritative during interaction
+  }, [bus.id, bus.volume_db]);
+
+  // Memoized handleMuteToggle
+  const handleMuteToggle = useCallback(async () => {
+    const newMutedState = !isMuted;
+    setIsMuted(newMutedState);
+
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("toggle_bus_mute", {
+          busId: bus.id,
+        });
+      } else {
+        console.log(`Mock: Toggle bus ${bus.id} mute to`, newMutedState);
+      }
+    } catch (error) {
+      console.error("Failed to toggle bus mute:", error);
+      // Revert on error
+      setIsMuted(bus.muted);
+    }
+  }, [bus.id, bus.muted, isMuted]);
+
+  // Memoized handlePresetVolume
+  const handlePresetVolume = useCallback((presetDb: number) => {
+    setLocalVolume(presetDb);
+    handleVolumeChange(presetDb);
+  }, [handleVolumeChange]);
 
   return (
     <div className="bg-slate-800 rounded-xl border border-slate-700 p-4 hover:border-blue-500/50 transition-all duration-200">
@@ -82,12 +139,62 @@ export function BusStrip({ bus }: BusStripProps) {
           </span>
         </div>
         <div className="text-xs text-slate-400">
-          {bus.muted ? (
+          {isMuted ? (
             <span className="text-yellow-500 font-medium">MUTED</span>
           ) : (
-            <span>{bus.volume_db.toFixed(1)} dB</span>
+            <span>{localVolume.toFixed(1)} dB</span>
           )}
         </div>
+      </div>
+
+      {/* Volume Fader (Studio One Style) */}
+      <div className="mb-3">
+        <label className="text-[10px] font-medium text-slate-400 mb-1.5 block">Volume</label>
+
+        {/* Custom VolumeFader */}
+        <div className="flex justify-center mb-3">
+          <VolumeFader
+            value={localVolume}
+            onChange={handleVolumeChange}
+            min={-60}
+            max={18}
+            disabled={isMuted}
+          />
+        </div>
+
+        {/* dB Presets */}
+        <div className="flex gap-2 mb-3">
+          {[-6, -12, -18].map((db) => (
+            <button
+              key={db}
+              onClick={() => handlePresetVolume(db)}
+              disabled={isMuted}
+              className={`
+                flex-1 px-1.5 py-1 text-[10px] rounded font-medium transition-all duration-200
+                ${isMuted
+                  ? 'opacity-50 cursor-not-allowed bg-slate-700 text-slate-500'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'
+                }
+              `}
+            >
+              {db}
+            </button>
+          ))}
+        </div>
+
+        {/* Mute Button */}
+        <button
+          onClick={handleMuteToggle}
+          className={`
+            w-full px-3 py-1.5 rounded-lg font-medium transition-all duration-200
+            ${isMuted
+              ? 'bg-yellow-500/20 text-yellow-500 border-2 border-yellow-500 hover:bg-yellow-500/30'
+              : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white border-2 border-transparent'
+            }
+          `}
+        >
+          {isMuted ? '🔇 Unmute' : '🔊 Mute'}
+        </button>
       </div>
 
       {/* Device Selection */}
@@ -172,3 +279,14 @@ export function BusStrip({ bus }: BusStripProps) {
     </div>
   );
 }
+
+// Memoize BusStrip to prevent unnecessary re-renders
+export const MemoizedBusStrip = memo(BusStrip, (prevProps, nextProps) => {
+  return (
+    prevProps.bus.id === nextProps.bus.id &&
+    prevProps.bus.name === nextProps.bus.name &&
+    prevProps.bus.output_device === nextProps.bus.output_device &&
+    prevProps.bus.volume_db === nextProps.bus.volume_db &&
+    prevProps.bus.muted === nextProps.bus.muted
+  );
+});

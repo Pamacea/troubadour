@@ -58,6 +58,9 @@ tempfile = "3.12"
 # Math
 num-complex = "0.4"
 
+# System paths
+dirs = "5.0"
+
 [profile.release]
 opt-level = 3
 lto = true

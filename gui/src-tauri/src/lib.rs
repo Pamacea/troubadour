@@ -4,10 +4,11 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tracing::info;
 use troubadour_core::domain::audio::AudioEnumerator;
-use troubadour_core::domain::config::{PresetManager, TroubadourConfig};
+use troubadour_core::domain::config::{ConfigManager, PresetManager, TroubadourConfig, MixerConfig};
 use troubadour_core::domain::mixer::{ChannelId, BusId, MixerChannel, MixerEngine};
-use troubadour_infra::audio::CpalEnumerator;
+use troubadour_infra::audio::{CpalEnumerator, AudioEngine};
 
 /// Validate and sanitize a channel ID
 /// Only allows alphanumeric characters, hyphens, and underscores
@@ -56,8 +57,10 @@ fn validate_volume_db(volume_db: f32) -> Result<(), String> {
 pub struct AppState {
     mixer: Arc<Mutex<MixerEngine>>,
     preset_manager: Arc<Mutex<PresetManager>>,
+    config_manager: Arc<ConfigManager>,
     rt: tokio::runtime::Runtime,
     enumerator: Arc<CpalEnumerator>,
+    audio_engine: Arc<Mutex<Option<AudioEngine>>>,
 }
 
 impl AppState {
@@ -103,17 +106,27 @@ impl AppState {
             PresetManager::new(PathBuf::from("presets"))
         ));
 
+        // Initialize config manager with 1 second auto-save interval
+        let config_dir = ConfigManager::default_config_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
+        let config_manager = Arc::new(ConfigManager::new(config_dir, 1));
+
         // Create Tokio runtime for async operations
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
         // Initialize audio enumerator
         let enumerator = Arc::new(CpalEnumerator::new());
 
+        // Audio engine will be initialized later when user starts audio
+        let audio_engine = Arc::new(Mutex::new(None));
+
         Self {
             mixer,
             preset_manager,
+            config_manager,
             rt,
             enumerator,
+            audio_engine,
         }
     }
 }
@@ -260,15 +273,19 @@ fn get_channels(state: tauri::State<AppState>) -> Result<Vec<ChannelInfo>, Strin
 
     Ok(mixer
         .channels()
-        .map(|ch| ChannelInfo {
-            id: ch.id.as_str().to_string(),
-            name: ch.name.clone(),
-            volume_db: ch.volume.db(),
-            muted: ch.muted,
-            solo: ch.solo,
-            level_db: ch.level.current_db,
-            peak_db: ch.level.peak_db,
-            input_device: ch.get_input_device().map(|s| s.to_string()),
+        .map(|ch| {
+            let is_master = ch.id.as_str() == "master" || ch.name.to_lowercase() == "master";
+            ChannelInfo {
+                id: ch.id.as_str().to_string(),
+                name: ch.name.clone(),
+                volume_db: ch.volume.db(),
+                muted: ch.muted,
+                solo: ch.solo,
+                level_db: ch.level.current_db,
+                peak_db: ch.level.peak_db,
+                input_device: ch.get_input_device().map(|s| s.to_string()),
+                is_master,
+            }
         })
         .collect())
 }
@@ -309,7 +326,7 @@ fn toggle_mute(state: tauri::State<AppState>, channel_id: String) -> Result<bool
     Ok(channel.toggle_mute())
 }
 
-/// Toggle solo for a channel
+/// Toggle solo for a channel (exclusive behavior)
 #[tauri::command]
 fn toggle_solo(state: tauri::State<AppState>, channel_id: String) -> Result<bool, String> {
     validate_channel_id(&channel_id)?;
@@ -317,11 +334,20 @@ fn toggle_solo(state: tauri::State<AppState>, channel_id: String) -> Result<bool
     let id = ChannelId::new(channel_id);
     let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
 
-    let channel = mixer
-        .channel_mut(&id)
-        .ok_or_else(|| format!("Channel not found: {}", id.as_str()))?;
+    // Get current state to determine new state
+    let current_solo = mixer
+        .channel(&id)
+        .ok_or_else(|| format!("Channel not found: {}", id.as_str()))?
+        .solo;
 
-    Ok(channel.toggle_solo())
+    let new_solo_state = !current_solo;
+
+    // Use exclusive solo logic
+    mixer
+        .set_channel_solo_exclusive(&id, new_solo_state)
+        .map_err(|e| e.to_string())?;
+
+    Ok(new_solo_state)
 }
 
 /// Add a new channel
@@ -486,6 +512,28 @@ fn set_channel_buses(
     Ok(())
 }
 
+/// Add a new bus to the mixer
+#[tauri::command]
+fn add_bus(state: tauri::State<AppState>) -> Result<String, String> {
+    let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    mixer
+        .add_bus()
+        .map(|bus_id| bus_id.as_str().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Remove the last bus from the mixer
+#[tauri::command]
+fn remove_bus(state: tauri::State<AppState>) -> Result<String, String> {
+    let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    mixer
+        .remove_bus()
+        .map(|bus_id| bus_id.as_str().to_string())
+        .map_err(|e| e.to_string())
+}
+
 /// List all available presets
 #[tauri::command]
 fn list_presets(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
@@ -572,6 +620,18 @@ fn save_preset(
                     volume_db: ch.volume.db(),
                     muted: ch.muted,
                     solo: ch.solo,
+                    input_device: ch.input_device.clone(),
+                })
+                .collect();
+
+            let buses: Vec<_> = mixer.buses()
+                .iter()
+                .map(|bus| troubadour_core::domain::config::BusConfig {
+                    id: bus.id.as_str().to_string(),
+                    name: bus.name.clone(),
+                    volume_db: bus.volume_db,
+                    muted: bus.muted,
+                    output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
                 })
                 .collect();
 
@@ -593,6 +653,7 @@ fn save_preset(
 
             let mixer_config = troubadour_core::domain::config::MixerConfig {
                 channels,
+                buses,
                 routing: troubadour_core::domain::config::RoutingConfig { routes },
             };
 
@@ -642,6 +703,7 @@ struct ChannelInfo {
     level_db: f32,
     peak_db: f32,
     input_device: Option<String>,
+    is_master: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -665,6 +727,179 @@ struct PresetInfo {
     name: String,
     channel_count: usize,
     route_count: usize,
+}
+
+/// Load configuration from file
+#[tauri::command]
+fn load_config(state: tauri::State<AppState>) -> Result<(), String> {
+    state
+        .rt
+        .block_on(async {
+            let config = state.config_manager.load().await;
+
+            // Apply configuration to mixer
+            let mixer_config = config.mixer;
+            let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+            // Clear existing channels and rebuild from config
+            for channel_config in &mixer_config.channels {
+                let id = ChannelId::new(channel_config.id.clone());
+                let mut channel = MixerChannel::new(id.clone(), channel_config.name.clone());
+                channel.set_volume(channel_config.volume_db);
+                if channel_config.muted {
+                    channel.toggle_mute();
+                }
+                if channel_config.solo {
+                    channel.toggle_solo();
+                }
+                channel.input_device = channel_config.input_device.clone();
+                mixer.add_channel(channel);
+            }
+
+            // Apply bus configurations
+            for bus_config in &mixer_config.buses {
+                let bus_id = BusId::new(bus_config.id.clone());
+                if let Some(bus) = mixer.bus_mut(&bus_id) {
+                    bus.volume_db = bus_config.volume_db;
+                    bus.muted = bus_config.muted;
+                    bus.output_device = bus_config.output_device.clone()
+                        .map(|id| troubadour_core::domain::audio::DeviceId::new(id));
+                }
+            }
+
+            // Apply routing
+            for route_config in &mixer_config.routing.routes {
+                let from = ChannelId::new(route_config.from.clone());
+                let to = ChannelId::new(route_config.to.clone());
+                mixer.routing_mut().set_route(&from, &to, route_config.enabled);
+            }
+
+            Ok(())
+        })
+}
+
+/// Save current configuration to file
+#[tauri::command]
+fn save_config(state: tauri::State<AppState>) -> Result<(), String> {
+    state
+        .rt
+        .block_on(async {
+            let mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+            // Build configuration from current mixer state
+            let mixer_config = MixerConfig::from_mixer_engine(&mixer);
+
+            let config = TroubadourConfig {
+                app: troubadour_core::domain::config::AppConfig::default(),
+                audio: troubadour_core::domain::config::AudioDeviceConfig::default(),
+                mixer: mixer_config,
+            };
+
+            state
+                .config_manager
+                .save(&config)
+                .await
+                .map_err(|e| e.to_string())
+        })
+}
+
+/// Get the config file path
+#[tauri::command]
+fn get_config_path(state: tauri::State<AppState>) -> Result<String, String> {
+    Ok(state
+        .config_manager
+        .config_path()
+        .to_string_lossy()
+        .to_string())
+}
+
+/// Clear configuration (delete config file)
+#[tauri::command]
+fn clear_config(state: tauri::State<AppState>) -> Result<(), String> {
+    state
+        .rt
+        .block_on(async {
+            state
+                .config_manager
+                .clear()
+                .await
+                .map_err(|e| e.to_string())
+        })
+}
+
+/// Start audio engine with per-channel device routing
+///
+/// This command reads the input_device field from each mixer channel
+/// and creates audio streams accordingly. Channels with the same device
+/// share a stream, channels with different devices get separate streams.
+#[tauri::command]
+fn start_audio(state: tauri::State<AppState>) -> Result<String, String> {
+    use troubadour_core::domain::audio::SampleRate;
+
+    info!("Starting audio engine with per-channel device routing");
+
+    // Create audio engine
+    let engine = AudioEngine::new(
+        state.enumerator.clone(),
+        state.mixer.clone(),
+        SampleRate::Hz48000,
+        512, // buffer size
+    );
+
+    // Initialize the engine
+    let mut engine_guard = engine;
+
+    // Start streams based on channel device assignments
+    engine_guard.start_channel_streams()
+        .map_err(|e| format!("Failed to start channel streams: {}", e))?;
+
+    // Store the engine in state
+    *state.audio_engine.lock().map_err(|e| format!("Lock error: {}", e))? = Some(engine_guard);
+
+    Ok("Audio engine started successfully".to_string())
+}
+
+/// Stop audio engine
+#[tauri::command]
+fn stop_audio(state: tauri::State<AppState>) -> Result<(), String> {
+    info!("Stopping audio engine");
+
+    let mut audio_engine = state.audio_engine.lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    *audio_engine = None; // Drop the engine, which will stop all streams
+
+    Ok(())
+}
+
+/// Refresh audio streams after device assignment changes
+///
+/// Call this after modifying channel input_device assignments to restart
+/// streams with the new routing configuration.
+#[tauri::command]
+fn refresh_audio_streams(state: tauri::State<AppState>) -> Result<String, String> {
+    info!("Refreshing audio streams");
+
+    let mut audio_engine = state.audio_engine.lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    if let Some(engine) = &mut *audio_engine {
+        engine.refresh_streams()
+            .map_err(|e| format!("Failed to refresh streams: {}", e))?;
+
+        Ok("Audio streams refreshed successfully".to_string())
+    } else {
+        Err("Audio engine not running. Call start_audio first.".to_string())
+    }
+}
+
+/// Check if audio engine is running
+#[tauri::command]
+fn is_audio_running(state: tauri::State<AppState>) -> Result<bool, String> {
+    let audio_engine = state.audio_engine.lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    Ok(audio_engine.as_ref().map(|e| e.is_running()).unwrap_or(false))
 }
 
 // ============================================================================
@@ -707,10 +942,20 @@ pub fn run() {
             get_buses,
             get_channel_buses,
             set_channel_buses,
+            add_bus,
+            remove_bus,
             list_presets,
             load_preset,
             save_preset,
             delete_preset,
+            load_config,
+            save_config,
+            get_config_path,
+            clear_config,
+            start_audio,
+            stop_audio,
+            refresh_audio_streams,
+            is_audio_running,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

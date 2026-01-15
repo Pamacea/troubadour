@@ -85,6 +85,22 @@ impl Bus {
             db_to_gain(self.volume_db)
         }
     }
+
+    /// Set volume in decibels (clamped to -60..+6 dB range)
+    pub fn set_volume(&mut self, db: f32) {
+        self.volume_db = db.clamp(-60.0, 6.0);
+    }
+
+    /// Toggle mute state, returning new state
+    pub fn toggle_mute(&mut self) -> bool {
+        self.muted = !self.muted;
+        self.muted
+    }
+
+    /// Set mute state directly
+    pub fn set_mute(&mut self, muted: bool) {
+        self.muted = muted;
+    }
 }
 
 /// Convert decibels to linear gain
