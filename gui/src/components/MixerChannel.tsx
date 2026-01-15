@@ -63,8 +63,8 @@ export function MixerChannel({
   return (
     <div
       className={`
-        flex flex-col bg-slate-800 rounded-xl border border-slate-700
-        hover:border-blue-500/50 transition-all duration-200 w-[160px] max-h-[600px]
+        flex flex-col flex-shrink-0 bg-slate-800 rounded-xl border border-slate-700
+        hover:border-blue-500/50 transition-all duration-200 w-[140px] h-[min(85vh,700px)] min-h-[500px]
         shadow-lg
       `}
     >
@@ -107,7 +107,7 @@ export function MixerChannel({
 
       {/* Level Meters (Enhanced) */}
       <div className="px-3 py-2">
-        <div className="flex gap-1 h-20">
+        <div className="flex gap-1 h-40">
           {/* Left Meter */}
           <div className="flex-1 relative">
             <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
@@ -125,7 +125,7 @@ export function MixerChannel({
           </div>
 
           {/* Right Meter */}
-          <div className="flex-1">
+          <div className="flex-1 relative">
             <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
               <div
                 className="absolute left-0 right-0 bg-gradient-to-t from-green-500 via-yellow-500 to-red-500 transition-all duration-75"
@@ -155,7 +155,7 @@ export function MixerChannel({
         </span>
 
         {/* Fader Track */}
-        <div className="relative w-full h-32 bg-slate-900 rounded-3xl border-2 border-slate-700">
+        <div className="relative w-full h-64 bg-slate-900 rounded-3xl border-2 border-slate-700">
           {/* Fader Fill */}
           <div
             className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-3xl transition-all duration-75"
