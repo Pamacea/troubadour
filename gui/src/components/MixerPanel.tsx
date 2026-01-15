@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoizedMixerChannel } from "./MixerChannel";
-import { MemoizedBusStrip } from "./BusStrip";
 import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAutoSaveConfig } from "../hooks/useAutoSaveConfig";
@@ -30,7 +29,6 @@ export function MixerPanel() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [buses, setBuses] = useState<BusInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showBusPanel, setShowBusPanel] = useState(true);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
   const [focusedChannelId, setFocusedChannelId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "info" } | null>(null);
@@ -309,53 +307,6 @@ export function MixerPanel() {
     }
   }
 
-  // Bus management functions
-  async function handleAddBus() {
-    try {
-      if (typeof window !== 'undefined' && window.__TAURI__) {
-        const busId = await invoke<string>("add_bus");
-        console.log(`Added bus: ${busId}`);
-        await loadBuses();
-      } else {
-        console.log("Mock: Add bus");
-        const newBusNum = buses.length + 1;
-        const newBus: BusInfo = {
-          id: `A${newBusNum}`,
-          name: `A${newBusNum}`,
-          output_device: null,
-          volume_db: 0,
-          muted: false,
-        };
-        setBuses([...buses, newBus]);
-      }
-    } catch (error) {
-      console.error("Failed to add bus:", error);
-      alert("Failed to add bus: " + error);
-    }
-  }
-
-  async function handleRemoveBus() {
-    if (buses.length <= 2) {
-      alert("Cannot remove bus: Minimum 2 buses required");
-      return;
-    }
-
-    try {
-      if (typeof window !== 'undefined' && window.__TAURI__) {
-        const busId = await invoke<string>("remove_bus");
-        console.log(`Removed bus: ${busId}`);
-        await loadBuses();
-      } else {
-        console.log("Mock: Remove bus");
-        const newBuses = buses.slice(0, -1);
-        setBuses(newBuses);
-      }
-    } catch (error) {
-      console.error("Failed to remove bus:", error);
-      alert("Failed to remove bus: " + error);
-    }
-  }
-
   // Memoized handlers to prevent recreation on every render
   const handleVolumeChange = useCallback(async (channelId: string, volumeDb: number) => {
     try {
@@ -586,89 +537,6 @@ export function MixerPanel() {
           </div>
         )}
       </div>
-
-      {/* Bus Panel (Output Devices) */}
-      {showBusPanel && (
-        <div className="border-t border-slate-700 bg-slate-900/50">
-          <div className="px-6 py-3 flex items-center justify-between border-b border-slate-700">
-            <div className="flex items-center gap-3">
-              <h3 className="text-sm font-semibold text-white">Output Buses</h3>
-              <span className="text-xs text-slate-400">
-                {buses.map(b => b.name).join(", ")} - Assign output devices
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              {/* Add Bus Button */}
-              <button
-                onClick={handleAddBus}
-                disabled={buses.length >= 5}
-                className={`
-                  px-3 py-1.5 rounded text-sm font-medium transition-all duration-200
-                  ${buses.length >= 5
-                    ? 'bg-slate-700 text-slate-500 cursor-not-allowed opacity-50'
-                    : 'bg-green-600 hover:bg-green-700 text-white'
-                  }
-                `}
-                title={buses.length >= 5 ? "Maximum bus limit reached (5)" : "Add new bus"}
-              >
-                + Add Bus
-              </button>
-
-              {/* Remove Bus Button */}
-              <button
-                onClick={handleRemoveBus}
-                disabled={buses.length <= 2}
-                className={`
-                  px-3 py-1.5 rounded text-sm font-medium transition-all duration-200
-                  ${buses.length <= 2
-                    ? 'bg-slate-700 text-slate-500 cursor-not-allowed opacity-50'
-                    : 'bg-red-600 hover:bg-red-700 text-white'
-                  }
-                `}
-                title={buses.length <= 2 ? "Minimum bus limit reached (2)" : "Remove last bus"}
-              >
-                - Remove Bus
-              </button>
-
-              {/* Hide Panel Button */}
-              <button
-                onClick={() => setShowBusPanel(false)}
-                className="text-slate-400 hover:text-white transition-colors ml-2"
-                title="Hide bus panel"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <div className="p-6 overflow-x-auto">
-            <div className="flex gap-4 min-w-max">
-              {buses.map((bus) => (
-                <div key={bus.id} className="w-1/12">
-                  <MemoizedBusStrip bus={bus} />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Bus Panel Toggle (when hidden) */}
-      {!showBusPanel && (
-        <div className="border-t border-slate-700 bg-slate-900 px-6 py-2">
-          <button
-            onClick={() => setShowBusPanel(true)}
-            className="text-sm text-slate-400 hover:text-white transition-colors flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-            Show Output Buses
-          </button>
-        </div>
-      )}
 
       {/* Toast Notification */}
       {toast && (

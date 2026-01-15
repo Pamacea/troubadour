@@ -187,8 +187,8 @@ export function MixerChannel({
 
   // Format dB for display - memoized
   const formatDb = useCallback((db: number) => {
-    if (db <= minVolume) return "-∞";
-    return `${db.toFixed(1)} dB`;
+    if (db <= minVolume) return "-60.0dB";
+    return `${db.toFixed(1)}dB`;
   }, [minVolume]);
 
   // Calculate meter height (logarithmic scale) - memoized
@@ -452,12 +452,6 @@ export function MixerChannel({
 
         {/* Volume Presets */}
         <div className="flex gap-1 w-full justify-center text-[10px]">
-          <button
-            onClick={() => handlePresetVolume(-60)}
-            className="flex-1 py-1 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
-          >
-            ∞
-          </button>
           <button
             onClick={() => handlePresetVolume(-6)}
             className="flex-1 py-1 text-[10px] font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
