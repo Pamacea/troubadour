@@ -37,20 +37,50 @@ export function MixerPanel() {
 
   async function loadDevices() {
     try {
-      const result = await invoke<DeviceInfo[]>("list_audio_devices");
-      setDevices(result);
-      if (result.length > 0 && !selectedDevice) {
-        setSelectedDevice(result[0].id);
+      // Check if running in Tauri context
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const result = await invoke<DeviceInfo[]>("list_audio_devices");
+        console.log("Loaded devices:", result);
+        setDevices(result);
+        if (result.length > 0 && !selectedDevice) {
+          setSelectedDevice(result[0].id);
+        }
+      } else {
+        console.warn("Not running in Tauri context - using mock devices");
+        // Mock devices for development
+        const mockDevices: DeviceInfo[] = [
+          { id: "mock-1", name: "Microphone (Realtek)", device_type: "Input", max_channels: 2 },
+          { id: "mock-2", name: "Speakers (Realtek)", device_type: "Output", max_channels: 2 },
+          { id: "mock-3", name: "Headphones (USB)", device_type: "Output", max_channels: 2 },
+        ];
+        setDevices(mockDevices);
+        if (!selectedDevice) {
+          setSelectedDevice(mockDevices[0].id);
+        }
       }
     } catch (error) {
       console.error("Failed to load devices:", error);
+      // Set empty array to prevent infinite loading
+      setDevices([]);
+      setLoading(false);
     }
   }
 
   async function loadChannels() {
     try {
-      const result = (await invoke<ChannelInfo[]>("get_channels")) || [];
-      setChannels(result);
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const result = (await invoke<ChannelInfo[]>("get_channels")) || [];
+        setChannels(result);
+      } else {
+        // Mock channels for development
+        const mockChannels: ChannelInfo[] = [
+          { id: "input-1", name: "Input 1", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
+          { id: "input-2", name: "Input 2", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
+          { id: "input-3", name: "Input 3", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
+          { id: "master", name: "Master", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
+        ];
+        setChannels(mockChannels);
+      }
       setLoading(false);
     } catch (error) {
       console.error("Failed to load channels:", error);
@@ -60,7 +90,11 @@ export function MixerPanel() {
 
   async function handleVolumeChange(channelId: string, volumeDb: number) {
     try {
-      await invoke("set_volume", { channelId, volumeDb });
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("set_volume", { channelId, volumeDb });
+      } else {
+        console.log(`Mock: Set volume for ${channelId} to ${volumeDb} dB`);
+      }
       // Optimistic update
       setChannels((prev) =>
         prev.map((ch) => (ch.id === channelId ? { ...ch, volume_db: volumeDb } : ch))
@@ -72,7 +106,11 @@ export function MixerPanel() {
 
   async function handleToggleMute(channelId: string) {
     try {
-      await invoke("toggle_mute", { channelId });
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("toggle_mute", { channelId });
+      } else {
+        console.log(`Mock: Toggle mute for ${channelId}`);
+      }
       setChannels((prev) =>
         prev.map((ch) => (ch.id === channelId ? { ...ch, muted: !ch.muted } : ch))
       );
@@ -83,7 +121,11 @@ export function MixerPanel() {
 
   async function handleToggleSolo(channelId: string) {
     try {
-      await invoke("toggle_solo", { channelId });
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("toggle_solo", { channelId });
+      } else {
+        console.log(`Mock: Toggle solo for ${channelId}`);
+      }
       setChannels((prev) =>
         prev.map((ch) => (ch.id === channelId ? { ...ch, solo: !ch.solo } : ch))
       );
@@ -96,8 +138,22 @@ export function MixerPanel() {
     const id = `channel-${Date.now()}`;
     const name = `Channel ${channels.length + 1}`;
     try {
-      await invoke("add_channel", { channelId: id, name });
-      await loadChannels();
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("add_channel", { channelId: id, name });
+        await loadChannels();
+      } else {
+        console.log(`Mock: Add channel ${id} (${name})`);
+        const newChannel: ChannelInfo = {
+          id,
+          name,
+          volume_db: 0,
+          muted: false,
+          solo: false,
+          level_db: -60,
+          peak_db: -60,
+        };
+        setChannels([...channels, newChannel]);
+      }
     } catch (error) {
       console.error("Failed to add channel:", error);
       alert("Failed to add channel: " + error);
