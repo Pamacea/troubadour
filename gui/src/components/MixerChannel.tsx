@@ -193,18 +193,22 @@ export function MixerChannel({
 
   // Calculate meter height (logarithmic scale) - memoized
   const meterHeight = useMemo(() => {
-    if (levelDb <= -60) return 0;
-    if (levelDb > 0) return 100;
+    // Use audio signal level if available, otherwise show volume setting
+    const db = levelDb > -60 ? levelDb : localVolume;
+    if (db <= -60) return 0;
+    if (db > 0) return 100;
     // Map -60dB to 0dB → 0% to 90%
-    return Math.min(90, ((levelDb + 60) / 60) * 100);
-  }, [levelDb]);
+    return Math.min(90, ((db + 60) / 60) * 100);
+  }, [levelDb, localVolume]);
 
   // Peak meter (yellow) - memoized
   const peakHeight = useMemo(() => {
-    if (peakDb <= -60) return 0;
-    if (peakDb > 0) return 100;
-    return Math.min(100, ((peakDb + 60) / 60) * 100);
-  }, [peakDb]);
+    // Use audio peak if available, otherwise show volume setting
+    const db = peakDb > -60 ? peakDb : localVolume;
+    if (db <= -60) return 0;
+    if (db > 0) return 100;
+    return Math.min(100, ((db + 60) / 60) * 100);
+  }, [peakDb, localVolume]);
 
   // Memoized handlePresetVolume
   const handlePresetVolume = useCallback((volumeDb: number) => {
