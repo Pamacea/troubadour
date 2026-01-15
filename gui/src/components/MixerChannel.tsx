@@ -110,7 +110,7 @@ export function MixerChannel({
         <div className="flex gap-1 h-32">
           {/* Left Meter */}
           <div className="flex-1 relative">
-            <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-full overflow-hidden">
+            <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
               {/* Peak indicator (yellow) */}
               <div
                 className="absolute left-0 right-0 bg-yellow-400 transition-all duration-75"
@@ -126,7 +126,7 @@ export function MixerChannel({
 
           {/* Right Meter */}
           <div className="flex-1">
-            <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-full overflow-hidden">
+            <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
               <div
                 className="absolute left-0 right-0 bg-gradient-to-t from-green-500 via-yellow-500 to-red-500 transition-all duration-75"
                 style={{ bottom: 0, height: `${meterHeight()}%` }}
@@ -155,10 +155,10 @@ export function MixerChannel({
         </span>
 
         {/* Fader Track */}
-        <div className="relative w-full h-48 bg-slate-900 rounded-full border-4 border-slate-700">
+        <div className="relative w-full h-48 bg-slate-900 rounded-3xl border-4 border-slate-700">
           {/* Fader Fill */}
           <div
-            className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-full transition-all duration-75"
+            className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-3xl transition-all duration-75"
             style={{ bottom: `${volumePercent}%`, height: "100%" }}
           />
 
