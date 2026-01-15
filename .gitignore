@@ -1,0 +1,39 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Config (user-specific)
+config.local.toml
+
+# Documentation
+/book/
+
+# Profiling
+flamegraph.svg
+criterion/
+
+# Claude
+.claude/
+
+# Smite
+.smite/
