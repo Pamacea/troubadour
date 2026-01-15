@@ -241,7 +241,7 @@ export function MixerPanel() {
             </div>
           </div>
         ) : (
-          <div className="flex gap-4 items-stretch h-full py-8 min-w-0">
+          <div className="flex gap-6 items-stretch h-full py-4 min-w-0">
             {channels.map((channel) => (
               <MixerChannel
                 key={channel.id}
