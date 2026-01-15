@@ -81,8 +81,8 @@ export function MixerPanel() {
 
     initializeApp();
 
-    // Refresh channels every 100ms for level meters
-    const interval = setInterval(loadChannels, 100);
+    // Refresh channels every 500ms for level meters (balance between responsiveness and performance)
+    const interval = setInterval(loadChannels, 500);
     return () => clearInterval(interval);
   }, []);
 
