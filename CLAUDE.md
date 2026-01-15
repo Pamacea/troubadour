@@ -191,8 +191,12 @@ Infrastructure (Audio, MIDI, Files)
 crates/
 ├── core/           # Domain logic (mixer, DSP, config)
 ├── infra/          # Infrastructure (audio backend, MIDI)
-├── api/            # API layer (CLI, GUI, OSC)
+├── app/            # API layer (CLI, future GUI, OSC)
 └── tests/          # Integration tests
+
+gui/                # Desktop GUI (Tauri + React)
+├── src-tauri/      # Rust backend with Tauri commands
+└── src/            # React + TypeScript frontend
 ```
 
 ### Modules Clés
