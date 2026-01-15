@@ -66,6 +66,11 @@ export function MixerChannel({
     loadChannelInputDevice();
   }, [id]);
 
+  // Sync localVolume with volumeDb prop
+  useEffect(() => {
+    setLocalVolume(volumeDb);
+  }, [volumeDb]);
+
   // Memoized loadBuses to prevent recreation on every render
   const loadBuses = useCallback(async () => {
     try {
