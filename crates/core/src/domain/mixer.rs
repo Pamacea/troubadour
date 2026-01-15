@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
+pub mod bus;
+
+pub use bus::{Bus, BusId, StandardBus, db_to_gain, gain_to_db};
+
 pub type Result<T> = std::result::Result<T, AudioError>;
 
 /// Unique identifier for a mixer channel
