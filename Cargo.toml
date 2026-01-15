@@ -1,0 +1,64 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/infra",
+    "crates/app",
+    "crates/tests",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Yanis <yanis@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Yanis/troubadour"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full", "tracing"] }
+
+# Audio
+cpal = "0.17.1"
+rubato = "1.0.0"
+rustfft = "6"
+
+# Concurrency
+crossbeam = "0.8"
+
+# Error handling
+thiserror = "2.0.17"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9.11"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Testing
+proptest = "1.4"
+criterion = "0.8.1"
+
+# Math
+num-complex = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 3

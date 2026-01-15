@@ -1,0 +1,19 @@
+[package]
+name = "troubadour-infra"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+cpal = { workspace = true }
+rubato = { workspace = true }
+rustfft = { workspace = true }
+crossbeam = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+troubadour-core = { path = "../core" }
