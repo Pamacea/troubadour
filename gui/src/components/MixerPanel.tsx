@@ -28,7 +28,6 @@ interface ChannelInfo {
 interface BusInfo {
   id: string;
   name: string;
-  input_device: string | null;
   output_device: string | null;
   volume_db: number;
   muted: boolean;
@@ -342,8 +341,8 @@ export function MixerPanel() {
       } else {
         // Mock buses for development
         const mockBuses: BusInfo[] = [
-          { id: "A1", name: "A1", input_device: null, output_device: null, volume_db: 0, muted: false },
-          { id: "A2", name: "A2", input_device: null, output_device: null, volume_db: 0, muted: false },
+          { id: "A1", name: "A1", output_device: null, volume_db: 0, muted: false },
+          { id: "A2", name: "A2", output_device: null, volume_db: 0, muted: false },
         ];
         setBuses(mockBuses);
       }
@@ -365,7 +364,6 @@ export function MixerPanel() {
         const newBus: BusInfo = {
           id: `A${newBusNum}`,
           name: `A${newBusNum}`,
-          input_device: null,
           output_device: null,
           volume_db: 0,
           muted: false,

@@ -235,40 +235,6 @@ fn get_bus_output_device(
         .map(|d| d.as_str().to_string()))
 }
 
-/// Set input device for a bus
-#[tauri::command]
-fn set_bus_input_device(
-    state: tauri::State<AppState>,
-    bus_id: String,
-    device_id: Option<String>,
-) -> Result<(), String> {
-    use troubadour_core::domain::audio::DeviceId;
-
-    let bus_id = BusId::new(bus_id);
-    let device_id = device_id.map(DeviceId::new);
-
-    state
-        .mixer
-        .lock()
-        .map_err(|e| format!("Lock error: {}", e))?
-        .set_bus_input_device(&bus_id, device_id)
-        .map_err(|e| e.to_string())
-}
-
-/// Get input device for a bus
-#[tauri::command]
-fn get_bus_input_device(
-    state: tauri::State<AppState>,
-    bus_id: String,
-) -> Result<Option<String>, String> {
-    let bus_id = BusId::new(bus_id);
-    let mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
-
-    Ok(mixer
-        .get_bus_input_device(&bus_id)
-        .map(|d| d.as_str().to_string()))
-}
-
 /// Set volume for a bus (in decibels)
 #[tauri::command]
 fn set_bus_volume(
@@ -510,7 +476,6 @@ fn get_buses(state: tauri::State<AppState>) -> Result<Vec<BusInfo>, String> {
         .map(|bus| BusInfo {
             id: bus.id.as_str().to_string(),
             name: bus.name.clone(),
-            input_device: bus.input_device.as_ref().map(|d| d.as_str().to_string()),
             output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
             volume_db: bus.volume_db,
             muted: bus.muted,
@@ -666,7 +631,6 @@ fn save_preset(
                     name: bus.name.clone(),
                     volume_db: bus.volume_db,
                     muted: bus.muted,
-                    input_device: bus.input_device.as_ref().map(|d| d.as_str().to_string()),
                     output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
                 })
                 .collect();
@@ -753,7 +717,6 @@ struct RouteInfo {
 struct BusInfo {
     id: String,
     name: String,
-    input_device: Option<String>,
     output_device: Option<String>,
     volume_db: f32,
     muted: bool,
@@ -799,8 +762,6 @@ fn load_config(state: tauri::State<AppState>) -> Result<(), String> {
                 if let Some(bus) = mixer.bus_mut(&bus_id) {
                     bus.volume_db = bus_config.volume_db;
                     bus.muted = bus_config.muted;
-                    bus.input_device = bus_config.input_device.clone()
-                        .map(|id| troubadour_core::domain::audio::DeviceId::new(id));
                     bus.output_device = bus_config.output_device.clone()
                         .map(|id| troubadour_core::domain::audio::DeviceId::new(id));
                 }
@@ -966,8 +927,6 @@ pub fn run() {
             list_output_devices,
             set_bus_output_device,
             get_bus_output_device,
-            set_bus_input_device,
-            get_bus_input_device,
             set_bus_volume,
             toggle_bus_mute,
             get_channels,

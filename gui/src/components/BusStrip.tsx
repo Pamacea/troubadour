@@ -12,7 +12,6 @@ interface DeviceInfo {
 interface BusInfo {
   id: string;
   name: string;
-  input_device: string | null;
   output_device: string | null;
   volume_db: number;
   muted: boolean;
@@ -23,9 +22,7 @@ interface BusStripProps {
 }
 
 export function BusStrip({ bus }: BusStripProps) {
-  const [inputDevices, setInputDevices] = useState<DeviceInfo[]>([]);
   const [outputDevices, setOutputDevices] = useState<DeviceInfo[]>([]);
-  const [selectedInputDevice, setSelectedInputDevice] = useState<string | null>(bus.input_device);
   const [selectedOutputDevice, setSelectedOutputDevice] = useState<string | null>(bus.output_device);
   const [localVolume, setLocalVolume] = useState(bus.volume_db);
   const [isMuted, setIsMuted] = useState(bus.muted);
@@ -35,25 +32,6 @@ export function BusStrip({ bus }: BusStripProps) {
   useEffect(() => {
     setLocalVolume(bus.volume_db);
   }, [bus.volume_db]);
-
-  // Load input devices on mount - memoized
-  const loadInputDevices = useCallback(async () => {
-    try {
-      if (typeof window !== 'undefined' && window.__TAURI__) {
-        const allDevices = await invoke<DeviceInfo[]>("list_audio_devices");
-        setInputDevices(allDevices.filter(d => d.device_type === "Input"));
-      } else {
-        // Mock devices for development
-        const mockDevices: DeviceInfo[] = [
-          { id: "mock-in-1", name: "Microphone (Realtek)", device_type: "Input", max_channels: 2 },
-          { id: "mock-in-2", name: "USB Microphone", device_type: "Input", max_channels: 2 },
-        ];
-        setInputDevices(mockDevices);
-      }
-    } catch (error) {
-      console.error("Failed to load input devices:", error);
-    }
-  }, []);
 
   // Load output devices on mount - memoized
   const loadOutputDevices = useCallback(async () => {
@@ -76,32 +54,8 @@ export function BusStrip({ bus }: BusStripProps) {
   }, []);
 
   useEffect(() => {
-    loadInputDevices();
     loadOutputDevices();
-  }, [loadInputDevices, loadOutputDevices]);
-
-  // Memoized handleInputDeviceChange
-  const handleInputDeviceChange = useCallback(async (deviceId: string) => {
-    setIsLoading(true);
-    const newDevice = deviceId === "none" ? null : deviceId;
-
-    try {
-      if (typeof window !== 'undefined' && window.__TAURI__) {
-        await invoke("set_bus_input_device", {
-          busId: bus.id,
-          deviceId: newDevice,
-        });
-      } else {
-        console.log(`Mock: Set bus ${bus.id} input device to`, newDevice);
-      }
-
-      setSelectedInputDevice(newDevice);
-    } catch (error) {
-      console.error("Failed to set bus input device:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [bus.id]);
+  }, [loadOutputDevices]);
 
   // Memoized handleOutputDeviceChange
   const handleOutputDeviceChange = useCallback(async (deviceId: string) => {
@@ -246,70 +200,7 @@ export function BusStrip({ bus }: BusStripProps) {
       </div>
 
       {/* Device Selection */}
-      <div className="space-y-3">
-        {/* Input Device */}
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-slate-400">Input Device</label>
-          <div className="relative">
-            <select
-              value={selectedInputDevice || "none"}
-              onChange={(e) => handleInputDeviceChange(e.target.value)}
-              disabled={isLoading}
-              className={`
-                w-full bg-slate-900 text-white text-sm rounded-lg border border-slate-600
-                px-3 py-2 pr-8 appearance-none cursor-pointer
-                hover:border-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500
-                disabled:opacity-50 disabled:cursor-not-allowed
-                transition-all duration-200
-              `}
-            >
-              <option value="none">No Device</option>
-              {inputDevices.map((device) => (
-                <option key={device.id} value={device.id}>
-                  {device.name} ({device.max_channels}ch)
-                </option>
-              ))}
-            </select>
-
-            {/* Custom arrow icon */}
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-              <svg
-                className="w-4 h-4 text-slate-400"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
-            </div>
-          </div>
-
-          {/* Input device info */}
-          {selectedInputDevice && (
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <svg
-                className="w-3 h-3 text-green-500"
-                fill="currentColor"
-                viewBox="0 0 20 20"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              <span>
-                {inputDevices.find((d) => d.id === selectedInputDevice)?.name || "Unknown device"}
-              </span>
-            </div>
-          )}
-        </div>
-
+      <div className="space-y-2">
         {/* Output Device */}
         <div className="space-y-2">
           <label className="text-xs font-medium text-slate-400">Output Device</label>
@@ -399,7 +290,6 @@ export const MemoizedBusStrip = memo(BusStrip, (prevProps, nextProps) => {
   return (
     prevProps.bus.id === nextProps.bus.id &&
     prevProps.bus.name === nextProps.bus.name &&
-    prevProps.bus.input_device === nextProps.bus.input_device &&
     prevProps.bus.output_device === nextProps.bus.output_device &&
     prevProps.bus.volume_db === nextProps.bus.volume_db &&
     prevProps.bus.muted === nextProps.bus.muted

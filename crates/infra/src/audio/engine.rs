@@ -18,37 +18,6 @@
 //! 1. Get output streams for each bus that has an output_device assigned
 //! 2. Send the mixed bus audio to the corresponding output stream
 //! 3. Handle multiple buses routing to the same output device (mix them)
-//!
-//! Example fix needed:
-//! ```rust
-//! // After mixer.process_with_effects()
-//! for (bus_id, bus_output) in outputs {
-//!     if let Some(bus) = mixer.bus(bus_id) {
-//!         if let Some(output_device_id) = &bus.output_device {
-//!             if let Some(stream) = self.output_streams.get_mut(output_device_id) {
-//!                 // Send bus_output to the stream
-//!                 stream.audio_stream.write_output(&bus_output)?;
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! # TODO: Bus Input Device Routing
-//!
-//! Currently, buses have an `input_device` field in the data structure and UI,
-//! but the audio engine doesn't actually route audio from bus input devices.
-//!
-//! To implement bus input device routing:
-//! 1. Add `start_bus_streams()` method similar to `start_channel_streams()`
-//! 2. Create audio streams for each unique bus input device
-//! 3. In `process_audio()`, mix bus input audio with channel audio for each bus
-//! 4. Handle bus input device changes with proper stream restart
-//!
-//! The workflow would be:
-//! - Bus input device → Bus mixer → Bus output device
-//! - Channel audio → Bus mixer → Bus output device
-//! - Both sources mixed together in the bus
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

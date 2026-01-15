@@ -441,33 +441,6 @@ impl MixerEngine {
             .and_then(|b| b.output_device.clone())
     }
 
-    /// Set the input device for a bus
-    pub fn set_bus_input_device(
-        &mut self,
-        bus_id: &BusId,
-        device_id: Option<crate::domain::audio::DeviceId>,
-    ) -> Result<()> {
-        let bus = self
-            .bus_mut(bus_id)
-            .ok_or_else(|| AudioError::DeviceNotFound(bus_id.as_str().to_string()))?;
-
-        bus.input_device = device_id;
-        debug!(
-            "Bus {} input device set to: {:?}",
-            bus_id.as_str(),
-            bus.input_device.as_ref().map(|d| d.as_str())
-        );
-        Ok(())
-    }
-
-    /// Get the input device for a bus
-    pub fn get_bus_input_device(&self, bus_id: &BusId) -> Option<crate::domain::audio::DeviceId> {
-        self.buses
-            .iter()
-            .find(|b| &b.id == bus_id)
-            .and_then(|b| b.input_device.clone())
-    }
-
     /// Add a new channel
     pub fn add_channel(&mut self, channel: MixerChannel) {
         debug!("Adding channel: {}", channel.name);
