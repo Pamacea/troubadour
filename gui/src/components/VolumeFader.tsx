@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback, memo } from "react";
 
 interface VolumeFaderProps {
   value: number;
-  onChange: (value: number) => void;
+  onChange: (value: number) => void; // Called on drag end (for backend)
+  onValueChange?: (value: number) => void; // Called during drag (for display)
   min?: number;
   max?: number;
   disabled?: boolean;
@@ -12,6 +13,7 @@ interface VolumeFaderProps {
 export function VolumeFader({
   value,
   onChange,
+  onValueChange,
   min = -60,
   max = 18,  // Changed to +18dB
   disabled = false,
@@ -85,9 +87,9 @@ export function VolumeFader({
     const newValue = clampValue(dragStartValueRef.current + dbChange);
 
     setLocalValue(newValue);
-    // Call onChange during drag for real-time display update
-    onChange(newValue);
-  }, [isDragging, max, min, clampValue, onChange]);
+    // Call onValueChange for display update during drag (don't call backend)
+    onValueChange?.(newValue);
+  }, [isDragging, max, min, clampValue, onValueChange]);
 
   // Handle mouse/touch end
   const handleDragEnd = useCallback(() => {
@@ -100,8 +102,9 @@ export function VolumeFader({
     document.removeEventListener('touchmove', handleDragMove);
     document.removeEventListener('touchend', handleDragEnd);
 
-    // onChange already called during drag, no need to call again
-  }, [handleDragMove]);
+    // Call onChange only on drag end to update backend
+    onChange(localValue);
+  }, [handleDragMove, localValue, onChange]);
 
   // Handle click on track
   const handleTrackClick = useCallback((e: React.MouseEvent) => {

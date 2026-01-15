@@ -213,6 +213,11 @@ export function MixerChannel({
     onVolumeChange(volumeDb);
   }, [onVolumeChange]);
 
+  // Memoized handleVolumeDisplayUpdate (immediate UI update during drag)
+  const handleVolumeDisplayUpdate = useCallback((newVolume: number) => {
+    setLocalVolume(newVolume);
+  }, []);
+
   return (
     <div
       className={`
@@ -437,6 +442,7 @@ export function MixerChannel({
         <VolumeFader
           value={localVolume}
           onChange={onVolumeChange}
+          onValueChange={handleVolumeDisplayUpdate}
           min={minVolume}
           max={maxVolume}
         />

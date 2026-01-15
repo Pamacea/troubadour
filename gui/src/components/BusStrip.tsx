@@ -126,11 +126,8 @@ export function BusStrip({ bus }: BusStripProps) {
     }
   }, [bus.id]);
 
-  // Memoized handleVolumeChange
+  // Memoized handleVolumeChange (backend update)
   const handleVolumeChange = useCallback(async (newVolume: number) => {
-    // Update local state immediately for responsive UI
-    setLocalVolume(newVolume);
-
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         await invoke("set_bus_volume", {
@@ -145,8 +142,12 @@ export function BusStrip({ bus }: BusStripProps) {
       // Revert on error
       setLocalVolume(bus.volume_db);
     }
-    // No delay needed - local state is authoritative during interaction
   }, [bus.id, bus.volume_db]);
+
+  // Memoized handleVolumeDisplayUpdate (immediate UI update)
+  const handleVolumeDisplayUpdate = useCallback((newVolume: number) => {
+    setLocalVolume(newVolume);
+  }, []);
 
   // Memoized handleMuteToggle
   const handleMuteToggle = useCallback(async () => {
@@ -202,6 +203,7 @@ export function BusStrip({ bus }: BusStripProps) {
           <VolumeFader
             value={localVolume}
             onChange={handleVolumeChange}
+            onValueChange={handleVolumeDisplayUpdate}
             min={-60}
             max={18}
             disabled={isMuted}
