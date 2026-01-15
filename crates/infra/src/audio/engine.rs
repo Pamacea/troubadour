@@ -3,6 +3,37 @@
 //! This module provides the AudioEngine which coordinates multiple audio streams,
 //! routes them through the mixer, and handles device connections.
 //!
+//! # CRITICAL TODO: Output Audio Not Being Played
+//!
+//! **MAJOR BUG**: The mixer processes audio correctly, but the output is NOT
+//! being sent to the output streams! Users will see level meters moving but
+//! hear no audio from output devices.
+//!
+//! Current state:
+//! - Input streams: ✅ Working (audio captured from devices)
+//! - Mixer processing: ✅ Working (audio mixed, effects applied)
+//! - Output streams: ❌ Created but NOT receiving audio
+//!
+//! To fix this, in `process_audio()` at line 376:
+//! 1. Get output streams for each bus that has an output_device assigned
+//! 2. Send the mixed bus audio to the corresponding output stream
+//! 3. Handle multiple buses routing to the same output device (mix them)
+//!
+//! Example fix needed:
+//! ```rust
+//! // After mixer.process_with_effects()
+//! for (bus_id, bus_output) in outputs {
+//!     if let Some(bus) = mixer.bus(bus_id) {
+//!         if let Some(output_device_id) = &bus.output_device {
+//!             if let Some(stream) = self.output_streams.get_mut(output_device_id) {
+//!                 // Send bus_output to the stream
+//!                 stream.audio_stream.write_output(&bus_output)?;
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
 //! # TODO: Bus Input Device Routing
 //!
 //! Currently, buses have an `input_device` field in the data structure and UI,
