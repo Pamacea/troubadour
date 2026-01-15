@@ -8,6 +8,8 @@ members = [
 ]
 resolver = "2"
 
+# Note: benchmarks are run separately with `cargo bench --workspace --exclude gui/src-tauri`
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

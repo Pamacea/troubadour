@@ -1,0 +1,29 @@
+[package]
+name = "troubadour-benchmarks"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+bench = false
+
+[[bench]]
+name = "mixer_benchmark"
+harness = false
+
+[[bench]]
+name = "resampling_benchmark"
+harness = false
+
+[[bench]]
+name = "dsp_benchmark"
+harness = false
+
+[[bench]]
+name = "memory_benchmark"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }
+troubadour-core = { path = "../crates/core" }
+troubadour-infra = { path = "../crates/infra" }

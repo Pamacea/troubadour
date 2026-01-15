@@ -7,7 +7,9 @@
 //! - macOS: CoreAudio
 
 pub mod cpal_backend;
+pub mod lockfree_buffer;
 pub mod stream;
 
 pub use cpal_backend::*;
+pub use lockfree_buffer::*;
 pub use stream::*;

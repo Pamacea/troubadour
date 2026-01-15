@@ -1,0 +1,35 @@
+# Criterion benchmark configuration
+
+[ci]
+# Ensure reproducible benchmarks
+confidence_level = 0.95
+measurement_time = 5
+warm_up_time = 3
+sample_size = 100
+
+[output]
+# Output format for benchmarks
+formatting = "verbose"
+
+[plotting]
+# Plot configuration (if using with cargo-critcompare)
+prefix = "troubadour"
+
+[[plots]]
+# Generate comparison plots
+name = "comparison"
+plot_type = "line_of_best_fit"
+
+[comparisons]
+# Comparison configuration
+baseline = "main"
+
+[target.troubadour-benchmarks]
+# Target-specific overrides
+bench_stable = true
+
+[profile.release]
+# Use optimized settings for benchmarks
+opt-level = 3
+lto = true
+codegen-units = 1
