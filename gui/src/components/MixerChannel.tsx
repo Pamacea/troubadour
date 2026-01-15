@@ -140,8 +140,8 @@ export function MixerChannel({
   return (
     <div
       className={`
-        flex flex-col flex-shrink-0 bg-slate-800 rounded-xl border border-slate-700
-        hover:border-blue-500/50 transition-all duration-200 w-[140px] h-[min(70vh,600px)] min-h-[400px]
+        flex flex-col shrink-0 bg-slate-800 rounded-xl border border-slate-700
+        hover:border-blue-500/50 transition-all duration-200 w-1/12 h-[min(70vh,37.5rem)] min-h-1/4
         shadow-lg
       `}
     >
@@ -175,10 +175,10 @@ export function MixerChannel({
 
       {/* Expanded Section - Bus Selection & EQ */}
       {isExpanded && (
-        <div className="px-4 py-3 border-b border-slate-700 bg-slate-900">
+        <div className="px-3 py-2 border-b border-slate-700 bg-slate-900">
           {/* Bus Selection */}
-          <div className="mb-3">
-            <p className="text-xs font-medium text-slate-400 mb-2">Output Buses</p>
+          <div className="mb-2">
+            <p className="text-xs font-medium text-slate-400 mb-1.5">Output Buses</p>
             <div className="flex flex-wrap gap-2">
               {buses.map((bus) => (
                 <button

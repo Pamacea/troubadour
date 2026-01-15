@@ -36,8 +36,8 @@ export function MixerPanel() {
   const [loading, setLoading] = useState(true);
   const [showDeviceInfo, setShowDeviceInfo] = useState(false);
   const [showBusPanel, setShowBusPanel] = useState(true);
-  // Track pending updates to prevent refresh from overwriting optimistic updates
-  const pendingUpdatesRef = useRef<Set<string>>(new Set());
+  // Cache of manually set states to prevent backend from overwriting
+  const manualStateOverridesRef = useRef<Map<string, {muted?: boolean, solo?: boolean}>>(new Map());
 
   // Load devices and channels on mount
   useEffect(() => {
@@ -84,34 +84,42 @@ export function MixerPanel() {
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         const result = (await invoke<ChannelInfo[]>("get_channels")) || [];
-        // Only update channels that don't have pending updates
-        setChannels((prevChannels) =>
+        // Apply manual overrides to prevent backend from overwriting user actions
+        setChannels(() =>
           result.map((newChannel) => {
-            const pendingChannelId = `${newChannel.id}-mute`;
-            const pendingSoloChannelId = `${newChannel.id}-solo`;
-
-            // If there's a pending mute/solo update, keep the local state
-            if (pendingUpdatesRef.current.has(pendingChannelId)) {
-              const prevChannel = prevChannels.find(c => c.id === newChannel.id);
-              return prevChannel ? { ...newChannel, muted: prevChannel.muted } : newChannel;
+            const override = manualStateOverridesRef.current.get(newChannel.id);
+            if (override) {
+              return {
+                ...newChannel,
+                ...(override.muted !== undefined && { muted: override.muted }),
+                ...(override.solo !== undefined && { solo: override.solo }),
+              };
             }
-            if (pendingUpdatesRef.current.has(pendingSoloChannelId)) {
-              const prevChannel = prevChannels.find(c => c.id === newChannel.id);
-              return prevChannel ? { ...newChannel, solo: prevChannel.solo } : newChannel;
-            }
-
             return newChannel;
           })
         );
       } else {
-        // Mock channels for development
+        // Mock channels for development - preserve manual overrides
         const mockChannels: ChannelInfo[] = [
           { id: "input-1", name: "Input 1", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
           { id: "input-2", name: "Input 2", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
           { id: "input-3", name: "Input 3", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
           { id: "master", name: "Master", volume_db: 0, muted: false, solo: false, level_db: -60, peak_db: -60 },
         ];
-        setChannels(mockChannels);
+        // Apply manual overrides even in mock mode
+        setChannels(() =>
+          mockChannels.map((channel) => {
+            const override = manualStateOverridesRef.current.get(channel.id);
+            if (override) {
+              return {
+                ...channel,
+                ...(override.muted !== undefined && { muted: override.muted }),
+                ...(override.solo !== undefined && { solo: override.solo }),
+              };
+            }
+            return channel;
+          })
+        );
       }
       setLoading(false);
     } catch (error) {
@@ -160,10 +168,10 @@ export function MixerPanel() {
     if (!channel) return;
 
     const newMutedState = !channel.muted;
-    const pendingId = `${channelId}-mute`;
+    const oldMutedState = channel.muted;
 
-    // Add to pending updates
-    pendingUpdatesRef.current.add(pendingId);
+    // Store manual override IMMEDIATELY
+    manualStateOverridesRef.current.set(channelId, { muted: newMutedState });
 
     // Optimistic update
     setChannels((prev) =>
@@ -176,18 +184,16 @@ export function MixerPanel() {
       } else {
         console.log(`Mock: Toggle mute for ${channelId}`);
       }
+      // Success: keep the override
     } catch (error) {
       // Rollback on error
       console.error("Failed to toggle mute:", error);
+      manualStateOverridesRef.current.delete(channelId);
       setChannels((prev) =>
-        prev.map((ch) => (ch.id === channelId ? { ...ch, muted: channel.muted } : ch))
+        prev.map((ch) => (ch.id === channelId ? { ...ch, muted: oldMutedState } : ch))
       );
-    } finally {
-      // Remove from pending updates after a short delay to allow backend to sync
-      setTimeout(() => {
-        pendingUpdatesRef.current.delete(pendingId);
-      }, 200);
     }
+    // Note: We keep the override indefinitely - only remove on error or explicit new action
   }
 
   async function handleToggleSolo(channelId: string) {
@@ -195,10 +201,10 @@ export function MixerPanel() {
     if (!channel) return;
 
     const newSoloState = !channel.solo;
-    const pendingId = `${channelId}-solo`;
+    const oldSoloState = channel.solo;
 
-    // Add to pending updates
-    pendingUpdatesRef.current.add(pendingId);
+    // Store manual override IMMEDIATELY
+    manualStateOverridesRef.current.set(channelId, { solo: newSoloState });
 
     // Optimistic update
     setChannels((prev) =>
@@ -211,18 +217,16 @@ export function MixerPanel() {
       } else {
         console.log(`Mock: Toggle solo for ${channelId}`);
       }
+      // Success: keep the override
     } catch (error) {
       // Rollback on error
       console.error("Failed to toggle solo:", error);
+      manualStateOverridesRef.current.delete(channelId);
       setChannels((prev) =>
-        prev.map((ch) => (ch.id === channelId ? { ...ch, solo: channel.solo } : ch))
+        prev.map((ch) => (ch.id === channelId ? { ...ch, solo: oldSoloState } : ch))
       );
-    } finally {
-      // Remove from pending updates after a short delay to allow backend to sync
-      setTimeout(() => {
-        pendingUpdatesRef.current.delete(pendingId);
-      }, 200);
     }
+    // Note: We keep the override indefinitely - only remove on error or explicit new action
   }
 
   async function handleAddChannel() {
@@ -276,7 +280,7 @@ export function MixerPanel() {
               <select
                 value={selectedDevice}
                 onChange={(e) => setSelectedDevice(e.target.value)}
-                className="bg-slate-700 text-white text-sm rounded px-3 py-1.5 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px]"
+                className="bg-slate-700 text-white text-sm rounded px-3 py-1.5 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-48"
               >
                 {devices.map((device) => (
                   <option key={device.id} value={device.id}>
@@ -374,7 +378,7 @@ export function MixerPanel() {
           <div className="p-6 overflow-x-auto">
             <div className="flex gap-4 min-w-max">
               {buses.map((bus) => (
-                <div key={bus.id} className="w-[280px]">
+                <div key={bus.id} className="w-72">
                   <BusStrip bus={bus} />
                 </div>
               ))}
