@@ -1,4 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+interface BusInfo {
+  id: string;
+  name: string;
+  output_device: string | null;
+  volume_db: number;
+  muted: boolean;
+}
 
 interface MixerChannelProps {
   id: string;
@@ -14,6 +23,7 @@ interface MixerChannelProps {
 }
 
 export function MixerChannel({
+  id,
   name,
   volumeDb,
   muted,
@@ -26,6 +36,68 @@ export function MixerChannel({
 }: MixerChannelProps) {
   const [localVolume, setLocalVolume] = useState(volumeDb);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [buses, setBuses] = useState<BusInfo[]>([]);
+  const [selectedBuses, setSelectedBuses] = useState<string[]>([]);
+
+  // Load buses on mount
+  useEffect(() => {
+    loadBuses();
+    loadChannelBuses();
+  }, [id]);
+
+  async function loadBuses() {
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const result = await invoke<BusInfo[]>("get_buses");
+        setBuses(result);
+      } else {
+        // Mock buses for development
+        const mockBuses: BusInfo[] = [
+          { id: "A1", name: "A1", output_device: null, volume_db: 0, muted: false },
+          { id: "A2", name: "A2", output_device: null, volume_db: 0, muted: false },
+          { id: "A3", name: "A3", output_device: null, volume_db: 0, muted: false },
+        ];
+        setBuses(mockBuses);
+      }
+    } catch (error) {
+      console.error("Failed to load buses:", error);
+    }
+  }
+
+  async function loadChannelBuses() {
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const result = await invoke<string[]>("get_channel_buses", { channelId: id });
+        setSelectedBuses(result);
+      } else {
+        // Mock default: route to A1
+        setSelectedBuses(["A1"]);
+      }
+    } catch (error) {
+      console.error("Failed to load channel buses:", error);
+    }
+  }
+
+  async function handleBusToggle(busId: string) {
+    const newSelection = selectedBuses.includes(busId)
+      ? selectedBuses.filter(b => b !== busId)
+      : [...selectedBuses, busId];
+
+    setSelectedBuses(newSelection);
+
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        await invoke("set_channel_buses", {
+          channelId: id,
+          busIds: newSelection,
+        });
+      } else {
+        console.log(`Mock: Set channel ${id} buses to`, newSelection);
+      }
+    } catch (error) {
+      console.error("Failed to set channel buses:", error);
+    }
+  }
 
   // Volume range: -60dB to +6dB
   const minVolume = -60;
@@ -60,16 +132,21 @@ export function MixerChannel({
     onVolumeChange(newVolume);
   };
 
+  const handlePresetVolume = (volumeDb: number) => {
+    setLocalVolume(volumeDb);
+    onVolumeChange(volumeDb);
+  };
+
   return (
     <div
       className={`
         flex flex-col flex-shrink-0 bg-slate-800 rounded-xl border border-slate-700
-        hover:border-blue-500/50 transition-all duration-200 w-[180px] h-[min(70vh,600px)] min-h-[450px]
+        hover:border-blue-500/50 transition-all duration-200 w-[180px] h-[min(60vh,450px)] min-h-[300px]
         shadow-lg
       `}
     >
       {/* Channel Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700">
         <input
           type="text"
           defaultValue={name}
@@ -96,18 +173,48 @@ export function MixerChannel({
         </button>
       </div>
 
-      {/* Expanded Section - EQ & Effects (placeholder for now) */}
+      {/* Expanded Section - Bus Selection & EQ */}
       {isExpanded && (
-        <div className="px-4 py-3 border-b border-slate-700 bg-slate-900">
-          <p className="text-xs text-slate-500 text-center italic">
-            EQ & Effects coming soon...
-          </p>
+        <div className="px-3 py-2 border-b border-slate-700 bg-slate-900">
+          {/* Bus Selection */}
+          <div className="mb-2">
+            <p className="text-xs font-medium text-slate-400 mb-1.5">Output Buses</p>
+            <div className="flex flex-wrap gap-2">
+              {buses.map((bus) => (
+                <button
+                  key={bus.id}
+                  onClick={() => handleBusToggle(bus.id)}
+                  className={`
+                    px-3 py-1.5 rounded-md text-xs font-medium transition-all
+                    ${selectedBuses.includes(bus.id)
+                      ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
+                      : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    }
+                  `}
+                >
+                  {bus.name}
+                </button>
+              ))}
+            </div>
+            {selectedBuses.length === 0 && (
+              <p className="text-xs text-slate-500 mt-2 italic">
+                No buses selected - channel will be silent
+              </p>
+            )}
+          </div>
+
+          {/* EQ & Effects placeholder */}
+          <div className="pt-3 border-t border-slate-700">
+            <p className="text-xs text-slate-500 text-center italic">
+              EQ & Effects coming soon...
+            </p>
+          </div>
         </div>
       )}
 
       {/* Level Meters (Enhanced) */}
-      <div className="px-3 py-2">
-        <div className="flex gap-1 h-32">
+      <div className="px-3 py-1.5">
+        <div className="flex gap-1 h-24">
           {/* Left Meter */}
           <div className="flex-1 relative">
             <div className="absolute left-0 right-0 top-0 bottom-0 bg-slate-900 rounded-2xl overflow-hidden">
@@ -140,26 +247,26 @@ export function MixerChannel({
         </div>
 
         {/* Peak value display */}
-        <div className="text-center mt-1">
-          <span className="text-xs font-mono font-bold text-white">
+        <div className="text-center mt-0.5">
+          <span className="text-[10px] font-mono font-bold text-white">
             {formatDb(peakDb)}
           </span>
         </div>
       </div>
 
       {/* Volume Fader (Enhanced) */}
-      <div className="flex flex-col items-center gap-2 px-3 py-3">
+      <div className="flex flex-col items-center gap-1.5 px-3 py-2">
         {/* Volume Display */}
-        <span className="text-base font-bold text-white font-mono">
+        <span className="text-sm font-bold text-white font-mono">
           {formatDb(localVolume)}
         </span>
 
         {/* Fader Track */}
-        <div className="relative w-full h-52 bg-slate-900 rounded-3xl border-2 border-slate-700">
+        <div className="relative w-full h-40 bg-slate-900 rounded-3xl border-2 border-slate-700">
           {/* Fader Fill */}
           <div
             className="absolute left-0 right-0 bg-gradient-to-t from-blue-600 to-blue-400 rounded-3xl transition-all duration-75"
-            style={{ bottom: `${volumePercent}%`, height: "100%" }}
+            style={{ bottom: 0, height: `${volumePercent}%` }}
           />
 
           {/* Fader Thumb */}
@@ -176,33 +283,33 @@ export function MixerChannel({
 
           {/* Visible Fader Thumb */}
           <div
-            className="absolute left-1/2 -translate-x-1/2 w-8 h-5 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
-            style={{ bottom: `calc(${volumePercent}% - 10px)` }}
+            className="absolute left-1/2 -translate-x-1/2 w-7 h-4 bg-gradient-to-b from-slate-100 to-slate-300 rounded-lg shadow-lg border-2 border-slate-400 transition-all duration-75"
+            style={{ bottom: `calc(${volumePercent}% - 8px)` }}
           />
         </div>
 
         {/* Volume Presets */}
         <div className="flex gap-1 w-full justify-center text-[10px]">
           <button
-            onClick={() => onVolumeChange(0)}
+            onClick={() => handlePresetVolume(-60)}
             className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             ∞
           </button>
           <button
-            onClick={() => onVolumeChange(-6)}
+            onClick={() => handlePresetVolume(-6)}
             className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             -6
           </button>
           <button
-            onClick={() => onVolumeChange(-12)}
+            onClick={() => handlePresetVolume(-12)}
             className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             -12
           </button>
           <button
-            onClick={() => onVolumeChange(-18)}
+            onClick={() => handlePresetVolume(-18)}
             className="flex-1 py-1 text-xs font-medium bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
           >
             -18
@@ -211,7 +318,7 @@ export function MixerChannel({
       </div>
 
       {/* Mute/Solo Buttons (Enhanced) */}
-      <div className="flex gap-2 px-3 pb-3">
+      <div className="flex gap-2 px-3 pb-2">
         <button
           onClick={onToggleMute}
           className={`

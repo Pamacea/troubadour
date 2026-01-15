@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MixerChannel } from "./MixerChannel";
+import { BusStrip } from "./BusStrip";
 
 interface DeviceInfo {
   id: string;
@@ -19,17 +20,30 @@ interface ChannelInfo {
   peak_db: number;
 }
 
+interface BusInfo {
+  id: string;
+  name: string;
+  output_device: string | null;
+  volume_db: number;
+  muted: boolean;
+}
+
 export function MixerPanel() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [buses, setBuses] = useState<BusInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [showDeviceInfo, setShowDeviceInfo] = useState(false);
+  const [showBusPanel, setShowBusPanel] = useState(true);
+  // Track pending updates to prevent refresh from overwriting optimistic updates
+  const pendingUpdatesRef = useRef<Set<string>>(new Set());
 
   // Load devices and channels on mount
   useEffect(() => {
     loadDevices();
     loadChannels();
+    loadBuses();
     // Refresh channels every 100ms for level meters
     const interval = setInterval(loadChannels, 100);
     return () => clearInterval(interval);
@@ -70,7 +84,25 @@ export function MixerPanel() {
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         const result = (await invoke<ChannelInfo[]>("get_channels")) || [];
-        setChannels(result);
+        // Only update channels that don't have pending updates
+        setChannels((prevChannels) =>
+          result.map((newChannel) => {
+            const pendingChannelId = `${newChannel.id}-mute`;
+            const pendingSoloChannelId = `${newChannel.id}-solo`;
+
+            // If there's a pending mute/solo update, keep the local state
+            if (pendingUpdatesRef.current.has(pendingChannelId)) {
+              const prevChannel = prevChannels.find(c => c.id === newChannel.id);
+              return prevChannel ? { ...newChannel, muted: prevChannel.muted } : newChannel;
+            }
+            if (pendingUpdatesRef.current.has(pendingSoloChannelId)) {
+              const prevChannel = prevChannels.find(c => c.id === newChannel.id);
+              return prevChannel ? { ...newChannel, solo: prevChannel.solo } : newChannel;
+            }
+
+            return newChannel;
+          })
+        );
       } else {
         // Mock channels for development
         const mockChannels: ChannelInfo[] = [
@@ -85,6 +117,25 @@ export function MixerPanel() {
     } catch (error) {
       console.error("Failed to load channels:", error);
       setLoading(false);
+    }
+  }
+
+  async function loadBuses() {
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const result = await invoke<BusInfo[]>("get_buses");
+        setBuses(result);
+      } else {
+        // Mock buses for development
+        const mockBuses: BusInfo[] = [
+          { id: "A1", name: "A1", output_device: null, volume_db: 0, muted: false },
+          { id: "A2", name: "A2", output_device: null, volume_db: 0, muted: false },
+          { id: "A3", name: "A3", output_device: null, volume_db: 0, muted: false },
+        ];
+        setBuses(mockBuses);
+      }
+    } catch (error) {
+      console.error("Failed to load buses:", error);
     }
   }
 
@@ -105,32 +156,72 @@ export function MixerPanel() {
   }
 
   async function handleToggleMute(channelId: string) {
+    const channel = channels.find(ch => ch.id === channelId);
+    if (!channel) return;
+
+    const newMutedState = !channel.muted;
+    const pendingId = `${channelId}-mute`;
+
+    // Add to pending updates
+    pendingUpdatesRef.current.add(pendingId);
+
+    // Optimistic update
+    setChannels((prev) =>
+      prev.map((ch) => (ch.id === channelId ? { ...ch, muted: newMutedState } : ch))
+    );
+
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         await invoke("toggle_mute", { channelId });
       } else {
         console.log(`Mock: Toggle mute for ${channelId}`);
       }
-      setChannels((prev) =>
-        prev.map((ch) => (ch.id === channelId ? { ...ch, muted: !ch.muted } : ch))
-      );
     } catch (error) {
+      // Rollback on error
       console.error("Failed to toggle mute:", error);
+      setChannels((prev) =>
+        prev.map((ch) => (ch.id === channelId ? { ...ch, muted: channel.muted } : ch))
+      );
+    } finally {
+      // Remove from pending updates after a short delay to allow backend to sync
+      setTimeout(() => {
+        pendingUpdatesRef.current.delete(pendingId);
+      }, 200);
     }
   }
 
   async function handleToggleSolo(channelId: string) {
+    const channel = channels.find(ch => ch.id === channelId);
+    if (!channel) return;
+
+    const newSoloState = !channel.solo;
+    const pendingId = `${channelId}-solo`;
+
+    // Add to pending updates
+    pendingUpdatesRef.current.add(pendingId);
+
+    // Optimistic update
+    setChannels((prev) =>
+      prev.map((ch) => (ch.id === channelId ? { ...ch, solo: newSoloState } : ch))
+    );
+
     try {
       if (typeof window !== 'undefined' && window.__TAURI__) {
         await invoke("toggle_solo", { channelId });
       } else {
         console.log(`Mock: Toggle solo for ${channelId}`);
       }
-      setChannels((prev) =>
-        prev.map((ch) => (ch.id === channelId ? { ...ch, solo: !ch.solo } : ch))
-      );
     } catch (error) {
+      // Rollback on error
       console.error("Failed to toggle solo:", error);
+      setChannels((prev) =>
+        prev.map((ch) => (ch.id === channelId ? { ...ch, solo: channel.solo } : ch))
+      );
+    } finally {
+      // Remove from pending updates after a short delay to allow backend to sync
+      setTimeout(() => {
+        pendingUpdatesRef.current.delete(pendingId);
+      }, 200);
     }
   }
 
@@ -260,6 +351,52 @@ export function MixerPanel() {
           </div>
         )}
       </div>
+
+      {/* Bus Panel (Output Devices) */}
+      {showBusPanel && (
+        <div className="border-t border-slate-700 bg-slate-900/50">
+          <div className="px-6 py-3 flex items-center justify-between border-b border-slate-700">
+            <div className="flex items-center gap-3">
+              <h3 className="text-sm font-semibold text-white">Output Buses</h3>
+              <span className="text-xs text-slate-400">A1, A2, A3 - Assign output devices</span>
+            </div>
+            <button
+              onClick={() => setShowBusPanel(false)}
+              className="text-slate-400 hover:text-white transition-colors"
+              title="Hide bus panel"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="p-6 overflow-x-auto">
+            <div className="flex gap-4 min-w-max">
+              {buses.map((bus) => (
+                <div key={bus.id} className="w-[280px]">
+                  <BusStrip bus={bus} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bus Panel Toggle (when hidden) */}
+      {!showBusPanel && (
+        <div className="border-t border-slate-700 bg-slate-900 px-6 py-2">
+          <button
+            onClick={() => setShowBusPanel(true)}
+            className="text-sm text-slate-400 hover:text-white transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+            Show Output Buses
+          </button>
+        </div>
+      )}
     </div>
   );
 }
