@@ -6,13 +6,6 @@ import { KeyboardShortcutsModal } from "./KeyboardShortcutsModal";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAutoSaveConfig } from "../hooks/useAutoSaveConfig";
 
-interface DeviceInfo {
-  id: string;
-  name: string;
-  device_type: string;
-  max_channels: number;
-}
-
 interface ChannelInfo {
   id: string;
   name: string;
@@ -35,11 +28,8 @@ interface BusInfo {
 
 export function MixerPanel() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
-  const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [buses, setBuses] = useState<BusInfo[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const [showDeviceInfo, setShowDeviceInfo] = useState(false);
   const [showBusPanel, setShowBusPanel] = useState(true);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
   const [focusedChannelId, setFocusedChannelId] = useState<string | null>(null);
@@ -57,9 +47,9 @@ export function MixerPanel() {
     1000 // 1 second debounce
   );
 
-  // Load devices and channels on mount
+  // Load channels and buses on mount
   useEffect(() => {
-    // Load configuration first, then initialize devices and channels
+    // Load configuration first, then initialize channels and buses
     const initializeApp = async () => {
       try {
         // Load saved configuration
@@ -72,8 +62,7 @@ export function MixerPanel() {
         // Continue with default state if config loading fails
       }
 
-      // Initialize devices and channels
-      loadDevices();
+      // Initialize channels and buses
       loadChannels();
       loadBuses();
     };
@@ -235,37 +224,6 @@ export function MixerPanel() {
     ],
     disabled: loading,
   });
-
-  async function loadDevices() {
-    try {
-      // Check if running in Tauri context
-      if (typeof window !== 'undefined' && window.__TAURI__) {
-        const result = await invoke<DeviceInfo[]>("list_audio_devices");
-        console.log("Loaded devices:", result);
-        setDevices(result);
-        if (result.length > 0 && !selectedDevice) {
-          setSelectedDevice(result[0].id);
-        }
-      } else {
-        console.warn("Not running in Tauri context - using mock devices");
-        // Mock devices for development
-        const mockDevices: DeviceInfo[] = [
-          { id: "mock-1", name: "Microphone (Realtek)", device_type: "Input", max_channels: 2 },
-          { id: "mock-2", name: "Speakers (Realtek)", device_type: "Output", max_channels: 2 },
-          { id: "mock-3", name: "Headphones (USB)", device_type: "Output", max_channels: 2 },
-        ];
-        setDevices(mockDevices);
-        if (!selectedDevice) {
-          setSelectedDevice(mockDevices[0].id);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to load devices:", error);
-      // Set empty array to prevent infinite loading
-      setDevices([]);
-      setLoading(false);
-    }
-  }
 
   async function loadChannels() {
     try {
@@ -535,39 +493,10 @@ export function MixerPanel() {
 
   return (
     <div className="flex flex-col h-full bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950">
-      {/* Top Bar - Device Selection */}
+      {/* Top Bar */}
       <div className="bg-slate-800 border-b border-slate-700 px-6 py-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h2 className="text-lg font-semibold text-white">Audio Mixer</h2>
-
-            {/* Device Selector */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-slate-400">Audio Device:</label>
-              <select
-                value={selectedDevice}
-                onChange={(e) => setSelectedDevice(e.target.value)}
-                className="bg-slate-700 text-white text-sm rounded px-3 py-1.5 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-48"
-              >
-                {devices.map((device) => (
-                  <option key={device.id} value={device.id}>
-                    {device.name} ({device.max_channels}ch)
-                  </option>
-                ))}
-              </select>
-
-              <button
-                onClick={() => setShowDeviceInfo(!showDeviceInfo)}
-                className="text-slate-400 hover:text-slate-200 p-1"
-                title="Device info"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9h6m-6 0h.01" />
-                </svg>
-              </button>
-            </div>
-          </div>
+          <h2 className="text-lg font-semibold text-white">Audio Mixer</h2>
 
           {/* Add Channel Button */}
           <div className="flex items-center gap-2">
@@ -587,15 +516,6 @@ export function MixerPanel() {
           </div>
         </div>
       </div>
-
-      {/* Device Info Panel (collapsible) */}
-      {showDeviceInfo && (
-        <div className="bg-slate-800 border-b border-slate-700 px-6 py-3">
-          <div className="text-sm text-slate-400">
-            Selected: <span className="text-white font-medium"> {devices.find(d => d.id === selectedDevice)?.name || 'None'}</span>
-          </div>
-        </div>
-      )}
 
       {/* Channel Strips */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-8">
