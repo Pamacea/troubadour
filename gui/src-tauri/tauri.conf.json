@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; img-src 'self' data: https://picsum.photos; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self';"
     }
   },
   "bundle": {

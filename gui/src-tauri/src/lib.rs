@@ -6,8 +6,51 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use troubadour_core::domain::audio::AudioEnumerator;
 use troubadour_core::domain::config::{PresetManager, TroubadourConfig};
-use troubadour_core::domain::mixer::{ChannelId, MixerChannel, MixerEngine};
+use troubadour_core::domain::mixer::{ChannelId, BusId, MixerChannel, MixerEngine};
 use troubadour_infra::audio::CpalEnumerator;
+
+/// Validate and sanitize a channel ID
+/// Only allows alphanumeric characters, hyphens, and underscores
+fn validate_channel_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("Channel ID cannot be empty".to_string());
+    }
+    if id.len() > 100 {
+        return Err("Channel ID too long (max 100 characters)".to_string());
+    }
+    if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err("Channel ID contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
+/// Validate and sanitize a channel name
+/// Only allows alphanumeric, spaces, and common punctuation
+fn validate_channel_name(name: &str) -> Result<(), String> {
+    if name.len() > 200 {
+        return Err("Channel name too long (max 200 characters)".to_string());
+    }
+    // Allow alphanumeric, spaces, and common punctuation
+    if !name.chars().all(|c| {
+        c.is_alphanumeric()
+        || c.is_whitespace()
+        || "()-_.,'/".contains(c)
+    }) {
+        return Err("Channel name contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a volume value is within acceptable bounds (-60 to +6 dB)
+fn validate_volume_db(volume_db: f32) -> Result<(), String> {
+    if volume_db < -60.0 || volume_db > 6.0 {
+        return Err(format!("Volume out of range: {} (must be -60 to +6 dB)", volume_db));
+    }
+    if !volume_db.is_finite() {
+        return Err("Volume must be a finite number".to_string());
+    }
+    Ok(())
+}
 
 /// Application state shared across Tauri commands
 pub struct AppState {
@@ -99,9 +142,13 @@ fn list_audio_devices(state: tauri::State<AppState>) -> Result<Vec<serde_json::V
                 .into_iter()
                 .map(|d| {
                     let max_ch = d.channel_counts.first().map(|c| c.count()).unwrap_or(2);
+                    // Sanitize device name to prevent XSS
+                    let safe_name = d.name.chars()
+                        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || "()-_.".contains(*c))
+                        .collect::<String>();
                     json!({
                         "id": d.id.as_str(),
-                        "name": d.name,
+                        "name": safe_name,
                         "device_type": "Input",
                         "max_channels": max_ch,
                     })
@@ -109,6 +156,101 @@ fn list_audio_devices(state: tauri::State<AppState>) -> Result<Vec<serde_json::V
                 .collect()
         })
         .map_err(|e: AudioError| e.to_string())
+}
+
+/// List all output devices
+#[tauri::command]
+fn list_output_devices(state: tauri::State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    use troubadour_core::domain::audio::AudioError;
+    use serde_json::json;
+
+    state
+        .enumerator
+        .output_devices()
+        .map(|devices: Vec<troubadour_core::domain::audio::DeviceInfo>| {
+            devices
+                .into_iter()
+                .map(|d| {
+                    let max_ch = d.channel_counts.first().map(|c| c.count()).unwrap_or(2);
+                    // Sanitize device name to prevent XSS
+                    let safe_name = d.name.chars()
+                        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || "()-_.".contains(*c))
+                        .collect::<String>();
+                    json!({
+                        "id": d.id.as_str(),
+                        "name": safe_name,
+                        "device_type": "Output",
+                        "max_channels": max_ch,
+                    })
+                })
+                .collect()
+        })
+        .map_err(|e: AudioError| e.to_string())
+}
+
+/// Set output device for a bus
+#[tauri::command]
+fn set_bus_output_device(
+    state: tauri::State<AppState>,
+    bus_id: String,
+    device_id: Option<String>,
+) -> Result<(), String> {
+    use troubadour_core::domain::audio::DeviceId;
+
+    let bus_id = BusId::new(bus_id);
+    let device_id = device_id.map(DeviceId::new);
+
+    state
+        .mixer
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?
+        .set_bus_output_device(&bus_id, device_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Get output device for a bus
+#[tauri::command]
+fn get_bus_output_device(
+    state: tauri::State<AppState>,
+    bus_id: String,
+) -> Result<Option<String>, String> {
+    let bus_id = BusId::new(bus_id);
+    let mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    Ok(mixer
+        .get_bus_output_device(&bus_id)
+        .map(|d| d.as_str().to_string()))
+}
+
+/// Set volume for a bus (in decibels)
+#[tauri::command]
+fn set_bus_volume(
+    state: tauri::State<AppState>,
+    bus_id: String,
+    volume_db: f32,
+) -> Result<(), String> {
+    let bus_id = BusId::new(bus_id);
+    let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    let bus = mixer
+        .bus_mut(&bus_id)
+        .ok_or_else(|| format!("Bus not found: {}", bus_id.as_str()))?;
+
+    bus.set_volume(volume_db);
+    Ok(())
+}
+
+/// Toggle mute for a bus
+#[tauri::command]
+fn toggle_bus_mute(state: tauri::State<AppState>, bus_id: String) -> Result<bool, String> {
+    let bus_id = BusId::new(bus_id);
+    let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    let bus = mixer
+        .bus_mut(&bus_id)
+        .ok_or_else(|| format!("Bus not found: {}", bus_id.as_str()))?;
+
+    Ok(bus.toggle_mute())
 }
 
 /// Get all mixer channels with their current state
@@ -126,6 +268,7 @@ fn get_channels(state: tauri::State<AppState>) -> Result<Vec<ChannelInfo>, Strin
             solo: ch.solo,
             level_db: ch.level.current_db,
             peak_db: ch.level.peak_db,
+            input_device: ch.get_input_device().map(|s| s.to_string()),
         })
         .collect())
 }
@@ -137,6 +280,9 @@ fn set_volume(
     channel_id: String,
     volume_db: f32,
 ) -> Result<(), String> {
+    validate_channel_id(&channel_id)?;
+    validate_volume_db(volume_db)?;
+
     let id = ChannelId::new(channel_id);
     let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
 
@@ -151,6 +297,8 @@ fn set_volume(
 /// Toggle mute for a channel
 #[tauri::command]
 fn toggle_mute(state: tauri::State<AppState>, channel_id: String) -> Result<bool, String> {
+    validate_channel_id(&channel_id)?;
+
     let id = ChannelId::new(channel_id);
     let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
 
@@ -164,6 +312,8 @@ fn toggle_mute(state: tauri::State<AppState>, channel_id: String) -> Result<bool
 /// Toggle solo for a channel
 #[tauri::command]
 fn toggle_solo(state: tauri::State<AppState>, channel_id: String) -> Result<bool, String> {
+    validate_channel_id(&channel_id)?;
+
     let id = ChannelId::new(channel_id);
     let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
 
@@ -181,6 +331,9 @@ fn add_channel(
     channel_id: String,
     name: String,
 ) -> Result<(), String> {
+    validate_channel_id(&channel_id)?;
+    validate_channel_name(&name)?;
+
     let id = ChannelId::new(channel_id);
     let channel = MixerChannel::new(id.clone(), name);
     state.mixer
@@ -193,12 +346,48 @@ fn add_channel(
 /// Remove a channel
 #[tauri::command]
 fn remove_channel(state: tauri::State<AppState>, channel_id: String) -> Result<(), String> {
+    validate_channel_id(&channel_id)?;
+
     let id = ChannelId::new(channel_id);
     state.mixer
         .lock()
         .map_err(|e| format!("Lock error: {}", e))?
         .remove_channel(&id)
         .map_err(|e| e.to_string())
+}
+
+/// Set input device for a channel
+#[tauri::command]
+fn set_channel_input_device(
+    state: tauri::State<AppState>,
+    channel_id: String,
+    device_id: Option<String>,
+) -> Result<(), String> {
+    let id = ChannelId::new(channel_id);
+    let mut mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    let channel = mixer
+        .channel_mut(&id)
+        .ok_or_else(|| format!("Channel not found: {}", id.as_str()))?;
+
+    channel.set_input_device(device_id);
+    Ok(())
+}
+
+/// Get input device for a channel
+#[tauri::command]
+fn get_channel_input_device(
+    state: tauri::State<AppState>,
+    channel_id: String,
+) -> Result<Option<String>, String> {
+    let id = ChannelId::new(channel_id);
+    let mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    let channel = mixer
+        .channel(&id)
+        .ok_or_else(|| format!("Channel not found: {}", id.as_str()))?;
+
+    Ok(channel.get_input_device().map(|s| s.to_string()))
 }
 
 /// Get routing matrix
@@ -234,14 +423,65 @@ fn set_route(
     to: String,
     enabled: bool,
 ) -> Result<(), String> {
+    validate_channel_id(&from)?;
+    validate_channel_id(&to)?;
+
     let from_id = ChannelId::new(from);
     let to_id = ChannelId::new(to);
 
-    state.mixer
+    state
+        .mixer
         .lock()
         .map_err(|e| format!("Lock error: {}", e))?
         .routing_mut()
         .set_route(&from_id, &to_id, enabled);
+
+    Ok(())
+}
+
+/// Get all available buses
+#[tauri::command]
+fn get_buses(state: tauri::State<AppState>) -> Result<Vec<BusInfo>, String> {
+    let mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    Ok(mixer
+        .buses()
+        .iter()
+        .map(|bus| BusInfo {
+            id: bus.id.as_str().to_string(),
+            name: bus.name.clone(),
+            output_device: bus.output_device.as_ref().map(|d| d.as_str().to_string()),
+            volume_db: bus.volume_db,
+            muted: bus.muted,
+        })
+        .collect())
+}
+
+/// Get buses assigned to a channel
+#[tauri::command]
+fn get_channel_buses(state: tauri::State<AppState>, channel_id: String) -> Result<Vec<String>, String> {
+    let id = ChannelId::new(channel_id);
+    let mixer = state.mixer.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    let bus_ids = mixer.get_channel_buses(&id);
+    Ok(bus_ids.into_iter().map(|id| id.as_str().to_string()).collect())
+}
+
+/// Set which buses a channel is routed to
+#[tauri::command]
+fn set_channel_buses(
+    state: tauri::State<AppState>,
+    channel_id: String,
+    bus_ids: Vec<String>,
+) -> Result<(), String> {
+    let id = ChannelId::new(channel_id);
+    let bus_ids: Vec<BusId> = bus_ids.into_iter().map(BusId::new).collect();
+
+    state
+        .mixer
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?
+        .set_channel_buses(&id, bus_ids);
 
     Ok(())
 }
@@ -401,6 +641,7 @@ struct ChannelInfo {
     solo: bool,
     level_db: f32,
     peak_db: f32,
+    input_device: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -408,6 +649,15 @@ struct RouteInfo {
     from: String,
     to: String,
     enabled: bool,
+}
+
+#[derive(serde::Serialize)]
+struct BusInfo {
+    id: String,
+    name: String,
+    output_device: Option<String>,
+    volume_db: f32,
+    muted: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -439,14 +689,24 @@ pub fn run() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             list_audio_devices,
+            list_output_devices,
+            set_bus_output_device,
+            get_bus_output_device,
+            set_bus_volume,
+            toggle_bus_mute,
             get_channels,
             set_volume,
             toggle_mute,
             toggle_solo,
             add_channel,
             remove_channel,
+            set_channel_input_device,
+            get_channel_input_device,
             get_routing,
             set_route,
+            get_buses,
+            get_channel_buses,
+            set_channel_buses,
             list_presets,
             load_preset,
             save_preset,
