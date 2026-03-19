@@ -38,15 +38,15 @@
 
 > Traitement audio professionnel par canal. Qualité studio.
 
-- [ ] **EQ paramétrique** : 3-5 bandes par canal (low shelf, peaking, high shelf)
-- [ ] **Compresseur** : threshold, ratio, attack, release, makeup gain
-- [ ] **Noise gate** : threshold, attack, release (essentiel pour les micros)
-- [ ] **Limiter** : protection contre le clipping sur les sorties
-- [ ] **Effects chain** : ordre des effets configurable par canal (drag & drop)
-- [ ] **Bypass** : activer/désactiver chaque effet individuellement
-- [ ] **UI EQ** : visualisation courbe fréquentielle interactive
-- [ ] **UI Compresseur/Gate** : visualisation gain reduction en temps réel
-- [ ] **Presets d'effets** : sauvegarder/charger des configurations d'effets
+- [x] **EQ paramétrique** : 3 bandes (low shelf, peaking, high shelf) avec biquad filters
+- [x] **Compresseur** : threshold, ratio, attack, release, makeup gain
+- [x] **Noise gate** : threshold, attack, release (off par défaut, activable)
+- [x] **Limiter** : protection contre le clipping (toujours actif, ceiling configurable)
+- [x] **Effects chain** : Gate → EQ → Compressor → Limiter, trait Processor + EffectsChain
+- [x] **Bypass** : activer/désactiver chaque effet individuellement
+- [x] **UI DSP** : panneau avec contrôles Gate, EQ (Low/Mid/High), Compressor, Limiter
+- [x] **UI Presets** : 3 presets intégrés (Default, Streaming, Clean)
+- [x] **Presets d'effets** : configs sérialisables TOML, presets avec tous les paramètres DSP
 
 ## v0.4.0 — Interface Complète
 

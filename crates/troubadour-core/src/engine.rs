@@ -11,6 +11,7 @@ use troubadour_shared::messages::{Command, Event};
 use troubadour_shared::mixer::{ChannelLevel, MixerConfig};
 
 use crate::device::DeviceManager;
+use crate::dsp::EffectsChain;
 use crate::mixer::Mixer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +101,9 @@ pub struct Engine {
     state: EngineState,
     mixer: Mixer,
     shared_state: SharedMixerState,
+    /// Chaîne DSP partagée avec le callback audio.
+    /// `Arc<Mutex>` car le callback doit appeler `process_sample` (mutable).
+    dsp_chain: Arc<Mutex<EffectsChain>>,
     _streams: Vec<Stream>,
 }
 
@@ -110,6 +114,7 @@ impl Engine {
 
         let mixer = Mixer::from_config(MixerConfig::default_setup());
         let shared_state = SharedMixerState::new();
+        let dsp_chain = Arc::new(Mutex::new(EffectsChain::default_mic_chain()));
 
         // Synchroniser le state initial avec le mixer
         shared_state.update_from_mixer(&mixer);
@@ -121,6 +126,7 @@ impl Engine {
             state: EngineState::Stopped,
             mixer,
             shared_state,
+            dsp_chain,
             _streams: Vec::new(),
         };
 
@@ -197,6 +203,7 @@ impl Engine {
 
         let event_tx = self.event_tx.clone();
         let shared = self.shared_state.clone();
+        let dsp = self.dsp_chain.clone();
 
         // ── INPUT STREAM ──
         let input_stream = match input_config.sample_format() {
@@ -227,24 +234,25 @@ impl Engine {
                             if muted {
                                 output.resize(frame_count * 2, 0.0);
                             } else {
-                                // Pour chaque frame, on extrait un signal mono
-                                // puis on applique le pan (gain L/R).
-                                //
-                                // POURQUOI toujours passer par mono ?
-                                // Une interface audio comme la Komplete Audio 2
-                                // reporte 2 canaux mais le micro est branché sur
-                                // l'entrée 1 seulement → canal gauche a du signal,
-                                // canal droit est à 0. Si on applique gain_r au
-                                // canal droit (qui est 0), on n'entend rien à droite.
-                                //
-                                // Solution : on mixe L+R en mono d'abord (downmix),
-                                // puis on redistribue avec le pan. Comme ça, le signal
-                                // est toujours présent dans les deux oreilles.
+                                // Pipeline audio v0.3 :
+                                // 1. Downmix vers mono
+                                // 2. DSP chain (gate → compressor → limiter)
+                                // 3. Appliquer gain L/R (volume × pan)
+
+                                // try_lock sur la chaîne DSP (non-bloquant)
+                                let mut dsp_guard = dsp.try_lock().ok();
+
                                 for frame in data.chunks(input_channels) {
-                                    // Downmix vers mono : moyenne des canaux
-                                    let mono: f32 =
+                                    // 1. Downmix vers mono
+                                    let mut mono: f32 =
                                         frame.iter().sum::<f32>() / input_channels as f32;
-                                    // Appliquer volume + pan
+
+                                    // 2. DSP processing
+                                    if let Some(ref mut chain) = dsp_guard {
+                                        mono = chain.process_sample(mono);
+                                    }
+
+                                    // 3. Appliquer volume + pan
                                     output.push(mono * gain_l);
                                     output.push(mono * gain_r);
                                 }
@@ -435,6 +443,11 @@ impl Engine {
 
     pub fn shared_mixer_state(&self) -> SharedMixerState {
         self.shared_state.clone()
+    }
+
+    /// Retourne un handle vers la chaîne DSP partagée.
+    pub fn shared_dsp_chain(&self) -> Arc<Mutex<EffectsChain>> {
+        self.dsp_chain.clone()
     }
 }
 

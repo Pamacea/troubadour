@@ -4,7 +4,10 @@ use troubadour_shared::audio::ChannelId;
 use troubadour_shared::messages::{Command, Event};
 use troubadour_shared::mixer::{ChannelKind, MixerConfig};
 
+use troubadour_shared::dsp::EffectsPreset;
+
 use super::channel_strip::ChannelStrip;
+use super::dsp_controls::DspControls;
 use super::routing_matrix::RoutingMatrix;
 
 /// Vue principale du mixer.
@@ -19,6 +22,7 @@ use super::routing_matrix::RoutingMatrix;
 #[component]
 pub fn MixerView() -> Element {
     let mut mixer_config = use_signal(MixerConfig::default_setup);
+    let mut dsp_preset = use_signal(EffectsPreset::default_preset);
 
     // Niveaux audio reçus du moteur
     let mut levels = use_signal(|| {
@@ -276,21 +280,102 @@ pub fn MixerView() -> Element {
                     }
                 }
 
-                // Routing Matrix
-                RoutingMatrix {
-                    inputs: inputs_for_matrix,
-                    outputs: outputs_for_matrix,
-                    routes: routes_for_matrix,
-                    on_toggle_route: move |(from, to): (ChannelId, ChannelId)| {
-                        let mut config = mixer_config.write();
-                        if config.has_route(from, to) {
-                            config.remove_route(from, to);
-                            crate::send_command(Command::RemoveRoute { from, to });
-                        } else {
-                            config.add_route(from, to);
-                            crate::send_command(Command::AddRoute { from, to });
+                // Routing Matrix + DSP side by side
+                div { class: "grid grid-cols-1 lg:grid-cols-2 gap-4",
+                    RoutingMatrix {
+                        inputs: inputs_for_matrix,
+                        outputs: outputs_for_matrix,
+                        routes: routes_for_matrix,
+                        on_toggle_route: move |(from, to): (ChannelId, ChannelId)| {
+                            let mut config = mixer_config.write();
+                            if config.has_route(from, to) {
+                                config.remove_route(from, to);
+                                crate::send_command(Command::RemoveRoute { from, to });
+                            } else {
+                                config.add_route(from, to);
+                                crate::send_command(Command::AddRoute { from, to });
+                            }
+                        },
+                    }
+
+                    {
+                        let preset = dsp_preset.read();
+                        rsx! {
+                            DspControls {
+                                gate_enabled: preset.noise_gate.enabled,
+                                gate_threshold: preset.noise_gate.threshold,
+                                comp_enabled: preset.compressor.enabled,
+                                comp_threshold: preset.compressor.threshold,
+                                comp_ratio: preset.compressor.ratio,
+                                comp_makeup: preset.compressor.makeup_gain,
+                                eq_enabled: preset.eq.enabled,
+                                eq_low_db: preset.eq.bands.first().map(|b| b.gain_db).unwrap_or(0.0),
+                                eq_mid_db: preset.eq.bands.get(1).map(|b| b.gain_db).unwrap_or(0.0),
+                                eq_high_db: preset.eq.bands.get(2).map(|b| b.gain_db).unwrap_or(0.0),
+                                limiter_ceiling: preset.limiter.ceiling,
+                                current_preset: preset.name.clone(),
+                                on_gate_toggle: move |enabled: bool| {
+                                    dsp_preset.write().noise_gate.enabled = enabled;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_gate_threshold: move |v: f32| {
+                                    dsp_preset.write().noise_gate.threshold = v;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_comp_toggle: move |enabled: bool| {
+                                    dsp_preset.write().compressor.enabled = enabled;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_comp_threshold: move |v: f32| {
+                                    dsp_preset.write().compressor.threshold = v;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_comp_ratio: move |v: f32| {
+                                    dsp_preset.write().compressor.ratio = v;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_comp_makeup: move |v: f32| {
+                                    dsp_preset.write().compressor.makeup_gain = v;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_eq_toggle: move |enabled: bool| {
+                                    dsp_preset.write().eq.enabled = enabled;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_eq_low: move |v: f32| {
+                                    if let Some(b) = dsp_preset.write().eq.bands.first_mut() {
+                                        b.gain_db = v;
+                                    }
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_eq_mid: move |v: f32| {
+                                    if let Some(b) = dsp_preset.write().eq.bands.get_mut(1) {
+                                        b.gain_db = v;
+                                    }
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_eq_high: move |v: f32| {
+                                    if let Some(b) = dsp_preset.write().eq.bands.get_mut(2) {
+                                        b.gain_db = v;
+                                    }
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_limiter_ceiling: move |v: f32| {
+                                    dsp_preset.write().limiter.ceiling = v;
+                                    crate::update_dsp(&dsp_preset.read());
+                                },
+                                on_preset_select: move |name: String| {
+                                    let preset = match name.as_str() {
+                                        "Streaming" => EffectsPreset::streaming(),
+                                        "Clean" => EffectsPreset::clean(),
+                                        _ => EffectsPreset::default_preset(),
+                                    };
+                                    dsp_preset.set(preset.clone());
+                                    crate::update_dsp(&preset);
+                                },
+                            }
                         }
-                    },
+                    }
                 }
             }
 

@@ -69,9 +69,13 @@ fn main() {
         }
     });
 
-    // Stocker le sender dédié pour l'UI
+    // Stocker les handles pour l'UI
     CMD_TX.write().unwrap().replace(cmd_tx);
     EVENT_RX.write().unwrap().replace(channels.event_rx);
+    DSP_CHAIN
+        .write()
+        .unwrap()
+        .replace(engine.shared_dsp_chain());
 
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
@@ -101,6 +105,24 @@ pub fn send_command(cmd: troubadour_shared::messages::Command) {
         && let Some(tx) = guard.as_ref()
     {
         let _ = tx.try_send(cmd);
+    }
+}
+
+// Handle vers la chaîne DSP partagée avec le callback audio
+static DSP_CHAIN: std::sync::RwLock<
+    Option<std::sync::Arc<std::sync::Mutex<troubadour_core::dsp::EffectsChain>>>,
+> = std::sync::RwLock::new(None);
+
+/// Reconstruit la chaîne DSP depuis un preset.
+/// Appelé à chaque changement dans l'UI DSP.
+pub fn update_dsp(preset: &troubadour_shared::dsp::EffectsPreset) {
+    if let Ok(guard) = DSP_CHAIN.read()
+        && let Some(dsp_arc) = guard.as_ref()
+    {
+        let new_chain = troubadour_core::dsp::EffectsChain::from_preset(preset);
+        if let Ok(mut chain) = dsp_arc.lock() {
+            *chain = new_chain;
+        }
     }
 }
 

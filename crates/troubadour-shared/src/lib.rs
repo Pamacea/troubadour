@@ -4,6 +4,7 @@
 // `pub` le rend accessible depuis l'extérieur de la crate.
 pub mod audio;
 pub mod config;
+pub mod dsp;
 pub mod error;
 pub mod messages;
 pub mod mixer;
