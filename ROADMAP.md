@@ -24,15 +24,15 @@
 
 > Multi-canaux, routing flexible, contrôles de base. Le coeur du mixer.
 
-- [ ] **Canaux virtuels** : créer des canaux d'entrée et de sortie nommés (Mic, Desktop, Browser, Music, Discord...)
-- [ ] **Routing matrix** : connecter n'importe quelle entrée vers n'importe quelle sortie (N:N)
-- [ ] **Volume par canal** : gain indépendant par canal (0.0 → 1.0+, avec boost)
-- [ ] **Mute / Solo** : par canal, avec logique solo exclusive/additive
-- [ ] **Pan stéréo** : gauche/droite par canal
-- [ ] **VU-meters temps réel** : niveaux audio affichés en temps réel dans l'UI (peak + RMS)
-- [ ] **UI Mixer** : faders verticaux, boutons mute/solo, VU-meters animés
-- [ ] **UI Routing matrix** : grille visuelle entrées × sorties (toggle on/off)
-- [ ] **Hot-plug** : détection branchement/débranchement de devices en temps réel
+- [x] **Canaux virtuels** : créer des canaux d'entrée et de sortie nommés (Mic, Desktop, Browser, Music, Discord...)
+- [x] **Routing matrix** : connecter n'importe quelle entrée vers n'importe quelle sortie (N:N)
+- [x] **Volume par canal** : gain indépendant par canal (0.0 → 1.0+, avec boost)
+- [x] **Mute / Solo** : par canal, avec logique solo exclusive/additive
+- [x] **Pan stéréo** : gauche/droite par canal
+- [x] **VU-meters temps réel** : niveaux audio affichés en temps réel dans l'UI (peak + RMS)
+- [x] **UI Mixer** : faders verticaux, boutons mute/solo, VU-meters animés — Tailwind CSS v4
+- [x] **UI Routing matrix** : grille visuelle entrées × sorties (toggle on/off)
+- [ ] **Hot-plug** : détection branchement/débranchement de devices en temps réel (reporté v0.4)
 
 ## v0.3.0 — DSP & Effects
 

@@ -236,10 +236,13 @@ impl Engine {
                         // `try_send` ne bloque jamais. Si le channel est plein,
                         // on drop le message. Pour les VU-meters, perdre un
                         // update n'est pas grave (le prochain arrive dans ~5ms).
-                        let _ = event_tx.try_send(Event::LevelUpdate {
-                            channel: troubadour_shared::audio::ChannelId(0),
-                            level: rms,
-                        });
+                        let _ = event_tx.try_send(Event::LevelUpdate(vec![
+                            troubadour_shared::mixer::ChannelLevel {
+                                channel: troubadour_shared::audio::ChannelId(0),
+                                rms,
+                                peak: data.iter().map(|s| s.abs()).fold(0.0_f32, f32::max),
+                            },
+                        ]));
                     }
 
                     // Envoyer les samples au stream de sortie.
@@ -311,13 +314,25 @@ impl Engine {
     pub fn process_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
             match cmd {
-                Command::SetVolume { level, .. } => {
+                Command::SetVolume { channel, level } => {
                     self.volume = level.clamp(0.0, 2.0);
-                    info!("Volume set to {}", self.volume);
+                    info!("Volume set to {} on channel {:?}", self.volume, channel);
                 }
-                Command::SetMute { muted, .. } => {
+                Command::SetMute { channel, muted } => {
                     self.muted = muted;
-                    info!("Mute set to {muted}");
+                    info!("Mute set to {muted} on channel {channel:?}");
+                }
+                Command::SetSolo { channel, solo } => {
+                    info!("Solo set to {solo} on channel {channel:?}");
+                }
+                Command::SetPan { channel, pan } => {
+                    info!("Pan set to {pan} on channel {channel:?}");
+                }
+                Command::AddRoute { from, to } => {
+                    info!("Route added: {from:?} → {to:?}");
+                }
+                Command::RemoveRoute { from, to } => {
+                    info!("Route removed: {from:?} → {to:?}");
                 }
                 Command::RequestDeviceList => {
                     self.send_device_list();

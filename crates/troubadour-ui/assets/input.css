@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Tailwind v4 : on utilise @import au lieu de @tailwind directives */
+
+/* Source des classes Rust */
+@source "../src/**/*.rs";
+
+/* Custom theme overrides */
+@theme {
+    --font-sans: "Segoe UI", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "Cascadia Code", monospace;
+}

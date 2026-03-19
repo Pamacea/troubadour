@@ -1,0 +1,18 @@
+[application]
+name = "Troubadour"
+default_platform = "desktop"
+
+[application.desktop]
+window_title = "Troubadour"
+window_width = 1200
+window_height = 800
+resizable = true
+
+[web.watcher]
+watch_path = ["src", "assets"]
+
+# Tailwind CSS : Dioxus exécute cette commande avant le build
+# pour générer le CSS compilé à partir des classes utilisées.
+[application.tools.tailwindcss]
+input = "assets/input.css"
+output = "assets/tailwind.css"

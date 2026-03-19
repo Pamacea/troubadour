@@ -7,6 +7,11 @@
 /target/
 **/*.rs.bk
 
+# Node (Tailwind build tooling)
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
 # OS
 .DS_Store
 Thumbs.db
