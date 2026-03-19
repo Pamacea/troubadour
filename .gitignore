@@ -1,0 +1,13 @@
+# IDE / Tools
+.claude/
+.ex-g-se/
+.smite/
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# OS
+.DS_Store
+Thumbs.db
