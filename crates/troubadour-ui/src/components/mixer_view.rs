@@ -1,26 +1,27 @@
 use dioxus::prelude::*;
 
 use troubadour_shared::audio::ChannelId;
+use troubadour_shared::messages::{Command, Event};
 use troubadour_shared::mixer::{ChannelKind, MixerConfig};
 
 use super::channel_strip::ChannelStrip;
 use super::routing_matrix::RoutingMatrix;
 
-/// Vue principale du mixer — assemble les channel strips et la matrice de routage.
+/// Vue principale du mixer.
 ///
-/// # State management avec `use_signal`
-/// Chaque `use_signal` crée un état réactif. Quand on appelle `.set()`,
-/// Dioxus re-rend le composant automatiquement (comme useState en React).
+/// # Câblage v0.3
+/// Chaque action UI (fader, mute, solo...) envoie une `Command` au moteur audio
+/// via `crate::send_command()`. Le moteur met à jour son mixer interne,
+/// recalcule les gains, et le callback audio applique les changements.
 ///
-/// Différence avec React : les signals sont Copy et peuvent être passés
-/// librement dans les closures sans se soucier des captures.
+/// Les niveaux audio remontent via `Event::LevelUpdate` et sont affichés
+/// dans les VU-meters en temps réel.
 #[component]
 pub fn MixerView() -> Element {
-    // Initialiser le mixer avec la config par défaut
     let mut mixer_config = use_signal(MixerConfig::default_setup);
 
-    // Simuler des niveaux audio (sera connecté au vrai engine en v0.3)
-    let levels = use_signal(|| {
+    // Niveaux audio reçus du moteur
+    let mut levels = use_signal(|| {
         vec![
             (ChannelId(0), 0.0_f32),
             (ChannelId(1), 0.0_f32),
@@ -28,6 +29,33 @@ pub fn MixerView() -> Element {
             (ChannelId(3), 0.0_f32),
             (ChannelId(4), 0.0_f32),
         ]
+    });
+
+    // Polling des événements du moteur audio (~60fps)
+    use_future(move || async move {
+        loop {
+            // Drainer tous les événements en attente
+            while let Some(event) = crate::try_recv_event() {
+                match event {
+                    Event::LevelUpdate(channel_levels) => {
+                        let mut lvls = levels.write();
+                        for cl in &channel_levels {
+                            if let Some(entry) = lvls.iter_mut().find(|(id, _)| *id == cl.channel) {
+                                entry.1 = cl.rms;
+                            }
+                        }
+                    }
+                    Event::DeviceList { .. } => {}
+                    Event::EngineStarted => {}
+                    Event::EngineStopped => {}
+                    Event::DeviceChanged => {}
+                    Event::Error(msg) => {
+                        tracing::error!("Engine error: {msg}");
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+        }
     });
 
     // Lister les devices
@@ -45,7 +73,6 @@ pub fn MixerView() -> Element {
         (inputs, outputs)
     });
 
-    // Extraire les données pour la routing matrix
     let config = mixer_config.read();
     let inputs_for_matrix: Vec<(ChannelId, String)> = config
         .channels
@@ -61,8 +88,6 @@ pub fn MixerView() -> Element {
         .collect();
     let routes_for_matrix: Vec<(ChannelId, ChannelId)> =
         config.routes.iter().map(|r| (r.from, r.to)).collect();
-
-    // Clone les données des channels pour le rendu
     let channels_data: Vec<_> = config.channels.clone();
     let levels_data = levels.read().clone();
     drop(config);
@@ -74,15 +99,13 @@ pub fn MixerView() -> Element {
                 div { class: "flex items-center justify-between",
                     div {
                         h1 { class: "text-xl font-bold text-white", "Troubadour" }
-                        p { class: "text-xs text-zinc-500", "Virtual Audio Mixer — v0.2.0" }
+                        p { class: "text-xs text-zinc-500", "Virtual Audio Mixer — v0.3.0" }
                     }
                     div { class: "flex items-center gap-3",
-                        // Indicateur engine
                         div { class: "flex items-center gap-2",
-                            div { class: "w-2 h-2 rounded-full bg-emerald-500" }
-                            span { class: "text-xs text-zinc-500", "Engine Running" }
+                            div { class: "w-2 h-2 rounded-full bg-emerald-500 animate-pulse" }
+                            span { class: "text-xs text-zinc-500", "Live Audio" }
                         }
-                        // Compteur devices
                         span { class: "text-xs text-zinc-600",
                             "{devices.0.len()} in / {devices.1.len()} out"
                         }
@@ -90,9 +113,8 @@ pub fn MixerView() -> Element {
                 }
             }
 
-            // Mixer principal
             div { class: "p-6",
-                // Section : Inputs
+                // Inputs
                 div { class: "mb-8",
                     h2 { class: "text-sm font-semibold text-zinc-400 mb-3 uppercase tracking-wider",
                         "Input Channels"
@@ -117,16 +139,54 @@ pub fn MixerView() -> Element {
                                         level: level,
                                         is_input: true,
                                         on_volume_change: move |vol: f32| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.volume = vol; }
+                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) {
+                                                c.volume = vol;
+                                            }
+                                            crate::send_command(Command::SetVolume {
+                                                channel: ch_id,
+                                                level: vol,
+                                            });
                                         },
                                         on_mute_toggle: move |_| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.muted = !c.muted; }
+                                            let new_muted;
+                                            {
+                                                let mut cfg = mixer_config.write();
+                                                if let Some(c) = cfg.channel_mut(ch_id) {
+                                                    c.muted = !c.muted;
+                                                    new_muted = c.muted;
+                                                } else {
+                                                    return;
+                                                }
+                                            }
+                                            crate::send_command(Command::SetMute {
+                                                channel: ch_id,
+                                                muted: new_muted,
+                                            });
                                         },
                                         on_solo_toggle: move |_| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.solo = !c.solo; }
+                                            let new_solo;
+                                            {
+                                                let mut cfg = mixer_config.write();
+                                                if let Some(c) = cfg.channel_mut(ch_id) {
+                                                    c.solo = !c.solo;
+                                                    new_solo = c.solo;
+                                                } else {
+                                                    return;
+                                                }
+                                            }
+                                            crate::send_command(Command::SetSolo {
+                                                channel: ch_id,
+                                                solo: new_solo,
+                                            });
                                         },
                                         on_pan_change: move |pan: f32| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.pan = pan; }
+                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) {
+                                                c.pan = pan;
+                                            }
+                                            crate::send_command(Command::SetPan {
+                                                channel: ch_id,
+                                                pan,
+                                            });
                                         },
                                     }
                                 }
@@ -135,7 +195,7 @@ pub fn MixerView() -> Element {
                     }
                 }
 
-                // Section : Outputs
+                // Outputs
                 div { class: "mb-8",
                     h2 { class: "text-sm font-semibold text-zinc-400 mb-3 uppercase tracking-wider",
                         "Output Channels"
@@ -160,16 +220,54 @@ pub fn MixerView() -> Element {
                                         level: level,
                                         is_input: false,
                                         on_volume_change: move |vol: f32| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.volume = vol; }
+                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) {
+                                                c.volume = vol;
+                                            }
+                                            crate::send_command(Command::SetVolume {
+                                                channel: ch_id,
+                                                level: vol,
+                                            });
                                         },
                                         on_mute_toggle: move |_| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.muted = !c.muted; }
+                                            let new_muted;
+                                            {
+                                                let mut cfg = mixer_config.write();
+                                                if let Some(c) = cfg.channel_mut(ch_id) {
+                                                    c.muted = !c.muted;
+                                                    new_muted = c.muted;
+                                                } else {
+                                                    return;
+                                                }
+                                            }
+                                            crate::send_command(Command::SetMute {
+                                                channel: ch_id,
+                                                muted: new_muted,
+                                            });
                                         },
                                         on_solo_toggle: move |_| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.solo = !c.solo; }
+                                            let new_solo;
+                                            {
+                                                let mut cfg = mixer_config.write();
+                                                if let Some(c) = cfg.channel_mut(ch_id) {
+                                                    c.solo = !c.solo;
+                                                    new_solo = c.solo;
+                                                } else {
+                                                    return;
+                                                }
+                                            }
+                                            crate::send_command(Command::SetSolo {
+                                                channel: ch_id,
+                                                solo: new_solo,
+                                            });
                                         },
                                         on_pan_change: move |pan: f32| {
-                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) { c.pan = pan; }
+                                            if let Some(c) = mixer_config.write().channel_mut(ch_id) {
+                                                c.pan = pan;
+                                            }
+                                            crate::send_command(Command::SetPan {
+                                                channel: ch_id,
+                                                pan,
+                                            });
                                         },
                                     }
                                 }
@@ -187,17 +285,18 @@ pub fn MixerView() -> Element {
                         let mut config = mixer_config.write();
                         if config.has_route(from, to) {
                             config.remove_route(from, to);
+                            crate::send_command(Command::RemoveRoute { from, to });
                         } else {
                             config.add_route(from, to);
+                            crate::send_command(Command::AddRoute { from, to });
                         }
                     },
                 }
             }
 
-            // Footer
             footer { class: "border-t border-zinc-800 px-6 py-3",
                 p { class: "text-[10px] text-zinc-600",
-                    "Troubadour v0.2.0 — Mixing Core"
+                    "Troubadour v0.3.0 — Live Audio"
                 }
             }
         }

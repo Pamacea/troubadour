@@ -1,99 +1,126 @@
+use std::sync::{Arc, Mutex};
+
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
 use crossbeam_channel::{Receiver, Sender};
 use tracing::{error, info, warn};
 
+use troubadour_shared::audio::ChannelId;
 use troubadour_shared::error::{TroubadourError, TroubadourResult};
 use troubadour_shared::messages::{Command, Event};
+use troubadour_shared::mixer::{ChannelLevel, MixerConfig};
 
 use crate::device::DeviceManager;
+use crate::mixer::Mixer;
 
-/// État du moteur audio.
-///
-/// # Le pattern State Machine avec enums
-/// Plutôt que des booléens (`is_running`, `is_paused`, `has_error`)
-/// qui créent des états impossibles (running ET stopped ?), on utilise
-/// un enum. Chaque état est exclusif. Le compilateur empêche les
-/// transitions invalides si on match dessus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineState {
     Stopped,
     Running,
 }
 
-/// Les handles vers les channels de communication.
+/// Paramètres audio lus par le callback audio.
 ///
-/// # Channels crossbeam — la messagerie inter-threads
-/// Un channel a deux bouts :
-/// - `Sender<T>` : envoie des messages de type T
-/// - `Receiver<T>` : reçoit des messages de type T
+/// # Pourquoi une struct séparée ?
+/// Le callback audio tourne sur un thread OS haute priorité.
+/// Il ne peut PAS :
+/// - Allouer de la mémoire (malloc peut bloquer)
+/// - Prendre un Mutex qui pourrait être contesté longtemps
+/// - Faire de l'I/O
 ///
-/// `crossbeam_channel` vs `std::sync::mpsc` :
-/// - crossbeam est multi-producer ET multi-consumer (mpmc)
-/// - std est multi-producer, single-consumer (mpsc)
-/// - crossbeam a des channels bornés (back-pressure)
-/// - crossbeam est plus performant
+/// On utilise `try_lock()` (non-bloquant) : si le lock est pris,
+/// on garde les anciens paramètres. Ça skip UN frame audio (~5ms)
+/// → imperceptible à l'oreille.
 ///
-/// Pour l'audio temps réel, on utilise des channels bornés (bounded)
-/// pour éviter qu'un producteur lent n'explose la mémoire.
-/// # `Clone` pour EngineChannels
-/// crossbeam `Sender` et `Receiver` sont tous deux `Clone`.
-/// Cloner un Sender/Receiver crée un nouveau handle vers le MÊME channel.
-/// C'est comme Arc — pas de copie de données, juste un compteur de références.
+/// Les paramètres sont des f32 simples, pas de Vec ni String.
+/// Copie rapide, pas d'allocation.
+#[derive(Clone)]
+pub struct SharedMixerState {
+    /// Gain gauche/droite du canal d'entrée principal
+    gain: Arc<Mutex<(f32, f32)>>,
+    /// Mute global
+    muted: Arc<Mutex<bool>>,
+}
+
+impl SharedMixerState {
+    fn new() -> Self {
+        // Gain par défaut : unity gain au centre (constant power pan)
+        // cos(π/4) = sin(π/4) = √2/2 ≈ 0.707
+        let default_gain = std::f32::consts::FRAC_PI_4;
+        Self {
+            gain: Arc::new(Mutex::new((default_gain.cos(), default_gain.sin()))),
+            muted: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Met à jour les gains depuis le mixer.
+    pub fn update_from_mixer(&self, mixer: &Mixer) {
+        // Prendre le gain effectif du premier canal d'entrée (Mic = ChannelId(0))
+        let (l, r) = mixer.effective_gain(ChannelId(0));
+        if let Ok(mut gain) = self.gain.lock() {
+            *gain = (l, r);
+        }
+        // Vérifier si tous les canaux sont muted
+        let all_muted = mixer.inputs().iter().all(|ch| ch.muted);
+        if let Ok(mut muted) = self.muted.lock() {
+            *muted = all_muted;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct EngineChannels {
-    /// L'UI envoie des commandes ici
     pub command_tx: Sender<Command>,
-    /// L'UI reçoit des événements ici
     pub event_rx: Receiver<Event>,
 }
 
-/// Le moteur audio principal de Troubadour.
+/// Le moteur audio principal.
 ///
-/// # Ownership en Rust — qui possède quoi ?
-/// `Engine` est le propriétaire (owner) de :
-/// - `device_manager` : le gestionnaire de devices
-/// - `command_rx` : le récepteur de commandes
-/// - `event_tx` : l'émetteur d'événements
-/// - `_streams` : les streams audio actifs
-///
-/// Quand `Engine` est détruit (drop), tout ce qu'il possède l'est aussi.
-/// Pas de garbage collector, pas de fuites. C'est le RAII de Rust.
+/// # Architecture v0.3 — le vrai câblage
+/// ```text
+/// Komplete Audio 2 (mono input)
+///     │
+///     ▼ cpal input callback
+///     │
+///     ├─► Mono → Stéréo (duplique le signal)
+///     ├─► Applique gain L/R (volume × pan)
+///     ├─► Si muted → silence
+///     ├─► Calcule RMS/peak → envoie Event::LevelUpdate
+///     │
+///     ▼ crossbeam channel
+///     │
+///     ▼ cpal output callback
+///     │
+///     ▼ soundcore Q45 (stéréo output)
+/// ```
 pub struct Engine {
     device_manager: DeviceManager,
     command_rx: Receiver<Command>,
     event_tx: Sender<Event>,
     state: EngineState,
-    volume: f32,
-    muted: bool,
-    // Les streams audio cpal doivent rester vivants tant qu'on veut du son.
-    // `_` prefix = on ne lit jamais ce champ, on le garde juste en vie.
-    // Sans ce champ, le stream serait drop immédiatement → plus de son.
+    mixer: Mixer,
+    shared_state: SharedMixerState,
     _streams: Vec<Stream>,
 }
 
 impl Engine {
-    /// Crée un nouveau moteur audio et retourne les channels de communication.
-    ///
-    /// # Le pattern "Constructor returns handles"
-    /// Au lieu de passer les channels en paramètre, on les crée ici
-    /// et on retourne les "handles" (les bouts UI). L'appelant n'a pas
-    /// besoin de connaître crossbeam.
-    ///
-    /// `bounded(64)` = le channel peut contenir max 64 messages.
-    /// Si l'UI envoie plus vite que le moteur ne traite, le 65ème
-    /// `.send()` bloquera jusqu'à ce qu'une place se libère.
     pub fn new() -> (Self, EngineChannels) {
         let (command_tx, command_rx) = crossbeam_channel::bounded(64);
         let (event_tx, event_rx) = crossbeam_channel::bounded(256);
+
+        let mixer = Mixer::from_config(MixerConfig::default_setup());
+        let shared_state = SharedMixerState::new();
+
+        // Synchroniser le state initial avec le mixer
+        shared_state.update_from_mixer(&mixer);
 
         let engine = Self {
             device_manager: DeviceManager::new(),
             command_rx,
             event_tx,
             state: EngineState::Stopped,
-            volume: 1.0,
-            muted: false,
+            mixer,
+            shared_state,
             _streams: Vec::new(),
         };
 
@@ -105,12 +132,6 @@ impl Engine {
         (engine, channels)
     }
 
-    /// Démarre le moteur audio avec les devices par défaut.
-    ///
-    /// # `&mut self` — l'emprunt mutable
-    /// On a besoin de modifier `self` (changer l'état, stocker les streams).
-    /// `&mut self` = emprunt exclusif. Pendant cet appel, personne d'autre
-    /// ne peut lire NI écrire dans `self`. Le borrow checker le garantit.
     pub fn start(&mut self) -> TroubadourResult<()> {
         if self.state == EngineState::Running {
             warn!("Engine already running");
@@ -119,7 +140,6 @@ impl Engine {
 
         info!("Starting audio engine...");
 
-        // Trouver les devices par défaut
         let input_device = self
             .device_manager
             .default_input_name()
@@ -132,7 +152,8 @@ impl Engine {
 
         info!("Input: {input_device}, Output: {output_device}");
 
-        self.start_passthrough(&input_device, &output_device)?;
+        self.shared_state.update_from_mixer(&self.mixer);
+        self.start_audio_pipeline(&input_device, &output_device)?;
 
         self.state = EngineState::Running;
         let _ = self.event_tx.try_send(Event::EngineStarted);
@@ -141,17 +162,19 @@ impl Engine {
         Ok(())
     }
 
-    /// Met en place un passthrough audio : entrée → sortie.
+    /// Construit le pipeline audio complet.
     ///
-    /// # `move` dans les closures
-    /// Les closures audio de cpal sont appelées depuis le thread audio du système.
-    /// Elles doivent posséder (own) toutes les données qu'elles utilisent,
-    /// car le thread appelant pourrait disparaître.
-    ///
-    /// `move |data| { ... }` transfère l'ownership des variables capturées
-    /// dans la closure. Sans `move`, la closure emprunterait (&) les variables
-    /// → le borrow checker refuserait car la closure vit plus longtemps.
-    fn start_passthrough(&mut self, input_name: &str, output_name: &str) -> TroubadourResult<()> {
+    /// # Le flux audio
+    /// 1. cpal capture le micro (peut être mono ou stéréo)
+    /// 2. On convertit en stéréo si nécessaire
+    /// 3. On applique le gain (volume × pan) depuis SharedMixerState
+    /// 4. On envoie le résultat au output stream
+    /// 5. On calcule les niveaux pour le VU-meter
+    fn start_audio_pipeline(
+        &mut self,
+        input_name: &str,
+        output_name: &str,
+    ) -> TroubadourResult<()> {
         let input_device = self.device_manager.find_input_device(input_name)?;
         let output_device = self.device_manager.find_output_device(output_name)?;
 
@@ -159,47 +182,147 @@ impl Engine {
             .default_input_config()
             .map_err(|e| TroubadourError::StreamError(e.to_string()))?;
 
+        let input_channels = input_config.channels() as usize;
+
         info!(
-            "Input config: {} channels, {} Hz, {:?}",
-            input_config.channels(),
+            "Input: {} ch, {} Hz, {:?}",
+            input_channels,
             input_config.sample_rate().0,
             input_config.sample_format()
         );
 
-        // On crée un channel pour transférer l'audio de l'input vers l'output.
-        // C'est un ring buffer simplifié. En production on utiliserait
-        // un vrai ring buffer lock-free, mais pour le passthrough v0.1 c'est suffisant.
-        let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(16);
+        // Channel pour transférer l'audio traité de l'input vers l'output.
+        // Toujours stéréo après traitement (2 f32 par frame).
+        let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(32);
 
         let event_tx = self.event_tx.clone();
+        let shared = self.shared_state.clone();
 
-        // --- Stream d'entrée ---
-        // cpal appelle cette closure ~100-1000x par seconde (selon buffer size)
-        // avec les échantillons audio du micro.
+        // ── INPUT STREAM ──
         let input_stream = match input_config.sample_format() {
-            SampleFormat::F32 => self.build_input_stream_f32(
-                &input_device,
-                &input_config.into(),
-                audio_tx,
-                event_tx.clone(),
-            )?,
-            // Pour les autres formats, on convertit en f32
+            SampleFormat::F32 => {
+                let config: cpal::StreamConfig = input_config.into();
+                input_device
+                    .build_input_stream(
+                        &config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            if data.is_empty() {
+                                return;
+                            }
+
+                            // Lire les gains (non-bloquant).
+                            // Si le lock est pris → on garde les gains du frame précédent.
+                            // C'est la magie du `try_lock` : JAMAIS de blocage dans le
+                            // callback audio. Pire cas = un frame avec les anciens gains.
+                            let (gain_l, gain_r) =
+                                shared.gain.try_lock().map(|g| *g).unwrap_or((0.707, 0.707));
+
+                            let muted = shared.muted.try_lock().map(|m| *m).unwrap_or(false);
+
+                            // Construire la sortie stéréo avec gain appliqué.
+                            // Pré-allouer pour éviter les réallocations.
+                            let frame_count = data.len() / input_channels;
+                            let mut output = Vec::with_capacity(frame_count * 2);
+
+                            if muted {
+                                output.resize(frame_count * 2, 0.0);
+                            } else {
+                                // Pour chaque frame, on extrait un signal mono
+                                // puis on applique le pan (gain L/R).
+                                //
+                                // POURQUOI toujours passer par mono ?
+                                // Une interface audio comme la Komplete Audio 2
+                                // reporte 2 canaux mais le micro est branché sur
+                                // l'entrée 1 seulement → canal gauche a du signal,
+                                // canal droit est à 0. Si on applique gain_r au
+                                // canal droit (qui est 0), on n'entend rien à droite.
+                                //
+                                // Solution : on mixe L+R en mono d'abord (downmix),
+                                // puis on redistribue avec le pan. Comme ça, le signal
+                                // est toujours présent dans les deux oreilles.
+                                for frame in data.chunks(input_channels) {
+                                    // Downmix vers mono : moyenne des canaux
+                                    let mono: f32 =
+                                        frame.iter().sum::<f32>() / input_channels as f32;
+                                    // Appliquer volume + pan
+                                    output.push(mono * gain_l);
+                                    output.push(mono * gain_r);
+                                }
+                            }
+
+                            // VU-meter : calculer RMS et peak sur le signal traité
+                            let rms = (output.iter().map(|&s| s * s).sum::<f32>()
+                                / output.len().max(1) as f32)
+                                .sqrt();
+                            let peak = output.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+
+                            let _ = event_tx.try_send(Event::LevelUpdate(vec![ChannelLevel {
+                                channel: ChannelId(0),
+                                rms,
+                                peak,
+                            }]));
+
+                            let _ = audio_tx.try_send(output);
+                        },
+                        move |err| error!("Input stream error: {err}"),
+                        None,
+                    )
+                    .map_err(|e| TroubadourError::StreamError(e.to_string()))?
+            }
             format => {
                 return Err(TroubadourError::StreamError(format!(
-                    "Unsupported sample format: {format:?}. Only F32 is supported in v0.1"
+                    "Unsupported format: {format:?}. Only F32 supported."
                 )));
             }
         };
 
-        // --- Stream de sortie ---
+        // ── OUTPUT STREAM ──
         let output_config = output_device
             .default_output_config()
             .map_err(|e| TroubadourError::StreamError(e.to_string()))?;
 
-        let output_stream =
-            self.build_output_stream_f32(&output_device, &output_config.into(), audio_rx)?;
+        let out_channels = output_config.channels() as usize;
+        info!(
+            "Output: {} ch, {} Hz",
+            out_channels,
+            output_config.sample_rate().0
+        );
 
-        // Démarrer les deux streams
+        let output_stream = output_device
+            .build_output_stream(
+                &output_config.into(),
+                move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    match audio_rx.try_recv() {
+                        Ok(stereo_data) => {
+                            // stereo_data est toujours [L, R, L, R, ...]
+                            let in_frames = stereo_data.len() / 2;
+                            let out_frames = output.len() / out_channels;
+                            let frames = in_frames.min(out_frames);
+
+                            for f in 0..frames {
+                                let l = stereo_data[f * 2];
+                                let r = stereo_data[f * 2 + 1];
+
+                                // Mapper stéréo vers N canaux de sortie
+                                for ch in 0..out_channels {
+                                    output[f * out_channels + ch] = if ch % 2 == 0 { l } else { r };
+                                }
+                            }
+                            // Remplir le reste avec du silence
+                            let written = frames * out_channels;
+                            for s in &mut output[written..] {
+                                *s = 0.0;
+                            }
+                        }
+                        Err(_) => output.fill(0.0),
+                    }
+                },
+                move |err| error!("Output stream error: {err}"),
+                None,
+            )
+            .map_err(|e| TroubadourError::StreamError(e.to_string()))?;
+
+        // Démarrer les streams
         input_stream
             .play()
             .map_err(|e| TroubadourError::StreamError(e.to_string()))?;
@@ -207,148 +330,60 @@ impl Engine {
             .play()
             .map_err(|e| TroubadourError::StreamError(e.to_string()))?;
 
-        // Stocker les streams pour les garder vivants.
-        // Si on ne fait pas ça, les streams sont drop à la fin de cette fonction
-        // → le son s'arrête immédiatement.
         self._streams.push(input_stream);
         self._streams.push(output_stream);
 
         Ok(())
     }
 
-    /// Construit le stream d'entrée pour les échantillons f32.
-    fn build_input_stream_f32(
-        &self,
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        audio_tx: Sender<Vec<f32>>,
-        event_tx: Sender<Event>,
-    ) -> TroubadourResult<Stream> {
-        device
-            .build_input_stream(
-                config,
-                move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                    // Calcul du niveau audio (RMS) pour le VU-meter
-                    if !data.is_empty() {
-                        let rms =
-                            (data.iter().map(|&s| s * s).sum::<f32>() / data.len() as f32).sqrt();
-
-                        // `try_send` ne bloque jamais. Si le channel est plein,
-                        // on drop le message. Pour les VU-meters, perdre un
-                        // update n'est pas grave (le prochain arrive dans ~5ms).
-                        let _ = event_tx.try_send(Event::LevelUpdate(vec![
-                            troubadour_shared::mixer::ChannelLevel {
-                                channel: troubadour_shared::audio::ChannelId(0),
-                                rms,
-                                peak: data.iter().map(|s| s.abs()).fold(0.0_f32, f32::max),
-                            },
-                        ]));
-                    }
-
-                    // Envoyer les samples au stream de sortie.
-                    // `to_vec()` copie les données — nécessaire car `data`
-                    // est un slice emprunté à cpal qui disparaît après le callback.
-                    let _ = audio_tx.try_send(data.to_vec());
-                },
-                move |err| {
-                    error!("Input stream error: {err}");
-                },
-                None, // timeout
-            )
-            .map_err(|e| TroubadourError::StreamError(e.to_string()))
-    }
-
-    /// Construit le stream de sortie pour les échantillons f32.
-    fn build_output_stream_f32(
-        &self,
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        audio_rx: Receiver<Vec<f32>>,
-    ) -> TroubadourResult<Stream> {
-        device
-            .build_output_stream(
-                config,
-                move |output: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    // Essayer de récupérer l'audio de l'entrée.
-                    // `try_recv()` ne bloque pas. Si pas de données,
-                    // on remplit avec du silence (0.0).
-                    match audio_rx.try_recv() {
-                        Ok(input_data) => {
-                            // Copier les samples d'entrée vers la sortie.
-                            // `iter().zip()` parcourt les deux slices en parallèle,
-                            // s'arrêtant au plus court. Pas de risque d'overflow.
-                            for (out_sample, &in_sample) in output.iter_mut().zip(input_data.iter())
-                            {
-                                *out_sample = in_sample;
-                            }
-                            // Remplir le reste avec du silence si l'input est plus court
-                            if input_data.len() < output.len() {
-                                for sample in &mut output[input_data.len()..] {
-                                    *sample = 0.0;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // Pas de données disponibles → silence
-                            // C'est normal au démarrage ou si l'input est en retard.
-                            output.fill(0.0);
-                        }
-                    }
-                },
-                move |err| {
-                    error!("Output stream error: {err}");
-                },
-                None,
-            )
-            .map_err(|e| TroubadourError::StreamError(e.to_string()))
-    }
-
-    /// Traite les commandes en attente de l'UI.
-    ///
-    /// # `while let` — boucle de pattern matching
-    /// `while let Ok(cmd) = self.command_rx.try_recv()` :
-    /// - Tant que `try_recv()` retourne `Ok(cmd)`, on continue
-    /// - Dès que ça retourne `Err` (channel vide), on sort
-    ///
-    /// C'est plus idiomatique qu'un `loop { match ... { Err => break } }`.
+    /// Traite les commandes de l'UI.
     pub fn process_commands(&mut self) {
+        let mut changed = false;
+
         while let Ok(cmd) = self.command_rx.try_recv() {
             match cmd {
                 Command::SetVolume { channel, level } => {
-                    self.volume = level.clamp(0.0, 2.0);
-                    info!("Volume set to {} on channel {:?}", self.volume, channel);
+                    self.mixer.set_volume(channel, level);
+                    changed = true;
                 }
                 Command::SetMute { channel, muted } => {
-                    self.muted = muted;
-                    info!("Mute set to {muted} on channel {channel:?}");
+                    self.mixer.set_mute(channel, muted);
+                    changed = true;
                 }
                 Command::SetSolo { channel, solo } => {
-                    info!("Solo set to {solo} on channel {channel:?}");
+                    self.mixer.set_solo(channel, solo);
+                    changed = true;
                 }
                 Command::SetPan { channel, pan } => {
-                    info!("Pan set to {pan} on channel {channel:?}");
+                    self.mixer.set_pan(channel, pan);
+                    changed = true;
                 }
                 Command::AddRoute { from, to } => {
-                    info!("Route added: {from:?} → {to:?}");
+                    self.mixer.add_route(from, to);
+                    changed = true;
                 }
                 Command::RemoveRoute { from, to } => {
-                    info!("Route removed: {from:?} → {to:?}");
+                    self.mixer.remove_route(from, to);
+                    changed = true;
                 }
                 Command::RequestDeviceList => {
                     self.send_device_list();
                 }
                 Command::Shutdown => {
-                    info!("Shutdown requested");
                     self.stop();
+                    return;
                 }
                 _ => {
                     warn!("Unhandled command: {cmd:?}");
                 }
             }
         }
+
+        if changed {
+            self.shared_state.update_from_mixer(&self.mixer);
+        }
     }
 
-    /// Envoie la liste des devices à l'UI.
     fn send_device_list(&self) {
         let inputs = self
             .device_manager
@@ -371,18 +406,10 @@ impl Engine {
             .try_send(Event::DeviceList { inputs, outputs });
     }
 
-    /// Arrête le moteur audio.
-    ///
-    /// # Drop implicite
-    /// `self._streams.clear()` drop tous les streams.
-    /// En Rust, quand un objet est drop, ses ressources sont libérées.
-    /// Pour `Stream`, ça arrête le thread audio et ferme le device.
-    /// Pas besoin de `.close()` ou `.dispose()` explicite.
     pub fn stop(&mut self) {
         if self.state == EngineState::Stopped {
             return;
         }
-
         info!("Stopping audio engine...");
         self._streams.clear();
         self.state = EngineState::Stopped;
@@ -390,21 +417,10 @@ impl Engine {
         info!("Audio engine stopped");
     }
 
-    /// Prend le récepteur de commandes hors de l'engine.
-    ///
-    /// # `Option::take()` — transfert d'ownership
-    /// `take()` remplace le contenu du `Option` par `None` et retourne
-    /// l'ancien contenu. C'est comme "voler" la valeur.
-    /// Après ça, l'engine ne peut plus recevoir de commandes directement.
-    ///
-    /// Pourquoi ? Parce que le Receiver doit être envoyé à un thread
-    /// de polling séparé (il est Send), tandis que l'Engine (qui contient
-    /// des Stream non-Send) reste sur le thread principal.
     pub fn take_command_receiver(&mut self) -> Receiver<Command> {
         self.command_rx.clone()
     }
 
-    /// Prend l'émetteur d'événements hors de l'engine.
     pub fn take_event_sender(&mut self) -> Sender<Event> {
         self.event_tx.clone()
     }
@@ -413,22 +429,15 @@ impl Engine {
         self.state
     }
 
-    pub fn volume(&self) -> f32 {
-        self.volume
+    pub fn mixer(&self) -> &Mixer {
+        &self.mixer
     }
 
-    pub fn is_muted(&self) -> bool {
-        self.muted
+    pub fn shared_mixer_state(&self) -> SharedMixerState {
+        self.shared_state.clone()
     }
 }
 
-/// # `Drop` — le destructeur de Rust
-/// Appelé automatiquement quand `Engine` sort du scope ou est détruit.
-/// Garantit qu'on arrête proprement l'audio, même si le code appelant
-/// oublie d'appeler `.stop()`. C'est du RAII (Resource Acquisition Is Initialization).
-///
-/// Contrairement au C++ où un destructeur peut être oublié (pointeurs nus),
-/// en Rust le drop est garanti par le compilateur.
 impl Drop for Engine {
     fn drop(&mut self) {
         self.stop();
@@ -438,7 +447,6 @@ impl Drop for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use troubadour_shared::audio::ChannelId;
 
     #[test]
     fn engine_starts_stopped() {
@@ -447,17 +455,14 @@ mod tests {
     }
 
     #[test]
-    fn engine_default_volume() {
+    fn engine_has_default_mixer() {
         let (engine, _channels) = Engine::new();
-        assert_eq!(engine.volume(), 1.0);
-        assert!(!engine.is_muted());
+        assert_eq!(engine.mixer().channel_count(), 5);
     }
 
     #[test]
     fn engine_processes_volume_command() {
         let (mut engine, channels) = Engine::new();
-
-        // Envoyer une commande de volume
         channels
             .command_tx
             .send(Command::SetVolume {
@@ -465,18 +470,73 @@ mod tests {
                 level: 0.5,
             })
             .unwrap();
+        engine.process_commands();
+        assert_eq!(engine.mixer().channel(ChannelId(0)).unwrap().volume, 0.5);
+    }
 
-        // Traiter la commande
+    #[test]
+    fn engine_volume_updates_shared_state() {
+        let (mut engine, channels) = Engine::new();
+
+        // Volume 0 → gain doit être (0, 0)
+        channels
+            .command_tx
+            .send(Command::SetVolume {
+                channel: ChannelId(0),
+                level: 0.0,
+            })
+            .unwrap();
         engine.process_commands();
 
-        assert_eq!(engine.volume(), 0.5);
+        let (l, r) = *engine.shared_state.gain.lock().unwrap();
+        assert_eq!(l, 0.0);
+        assert_eq!(r, 0.0);
+    }
+
+    #[test]
+    fn engine_mute_updates_shared_state() {
+        let (mut engine, channels) = Engine::new();
+
+        // Muter tous les inputs
+        for id in [0, 1, 2] {
+            channels
+                .command_tx
+                .send(Command::SetMute {
+                    channel: ChannelId(id),
+                    muted: true,
+                })
+                .unwrap();
+        }
+        engine.process_commands();
+
+        // Le gain du canal 0 doit être 0 (muted)
+        let (l, r) = *engine.shared_state.gain.lock().unwrap();
+        assert_eq!(l, 0.0);
+        assert_eq!(r, 0.0);
+    }
+
+    #[test]
+    fn engine_pan_updates_shared_state() {
+        let (mut engine, channels) = Engine::new();
+
+        // Pan tout à gauche
+        channels
+            .command_tx
+            .send(Command::SetPan {
+                channel: ChannelId(0),
+                pan: -1.0,
+            })
+            .unwrap();
+        engine.process_commands();
+
+        let (l, r) = *engine.shared_state.gain.lock().unwrap();
+        assert!(l > 0.9, "Left gain should be ~1.0, got {l}");
+        assert!(r < 0.01, "Right gain should be ~0.0, got {r}");
     }
 
     #[test]
     fn engine_clamps_volume() {
         let (mut engine, channels) = Engine::new();
-
-        // Volume trop haut → clampé à 2.0
         channels
             .command_tx
             .send(Command::SetVolume {
@@ -484,15 +544,13 @@ mod tests {
                 level: 5.0,
             })
             .unwrap();
-
         engine.process_commands();
-        assert_eq!(engine.volume(), 2.0);
+        assert_eq!(engine.mixer().channel(ChannelId(0)).unwrap().volume, 2.0);
     }
 
     #[test]
     fn engine_processes_mute_command() {
         let (mut engine, channels) = Engine::new();
-
         channels
             .command_tx
             .send(Command::SetMute {
@@ -500,47 +558,81 @@ mod tests {
                 muted: true,
             })
             .unwrap();
-
         engine.process_commands();
-        assert!(engine.is_muted());
+        assert!(engine.mixer().channel(ChannelId(0)).unwrap().muted);
+    }
+
+    #[test]
+    fn engine_processes_solo_command() {
+        let (mut engine, channels) = Engine::new();
+        channels
+            .command_tx
+            .send(Command::SetSolo {
+                channel: ChannelId(0),
+                solo: true,
+            })
+            .unwrap();
+        engine.process_commands();
+        assert!(engine.mixer().channel(ChannelId(0)).unwrap().solo);
+    }
+
+    #[test]
+    fn engine_processes_pan_command() {
+        let (mut engine, channels) = Engine::new();
+        channels
+            .command_tx
+            .send(Command::SetPan {
+                channel: ChannelId(0),
+                pan: -0.5,
+            })
+            .unwrap();
+        engine.process_commands();
+        assert_eq!(engine.mixer().channel(ChannelId(0)).unwrap().pan, -0.5);
+    }
+
+    #[test]
+    fn engine_processes_route_commands() {
+        let (mut engine, channels) = Engine::new();
+        channels
+            .command_tx
+            .send(Command::AddRoute {
+                from: ChannelId(1),
+                to: ChannelId(4),
+            })
+            .unwrap();
+        engine.process_commands();
+        assert!(engine.mixer().has_route(ChannelId(1), ChannelId(4)));
+
+        channels
+            .command_tx
+            .send(Command::RemoveRoute {
+                from: ChannelId(1),
+                to: ChannelId(4),
+            })
+            .unwrap();
+        engine.process_commands();
+        assert!(!engine.mixer().has_route(ChannelId(1), ChannelId(4)));
     }
 
     #[test]
     fn engine_processes_device_list_request() {
         let (mut engine, channels) = Engine::new();
-
         channels
             .command_tx
             .send(Command::RequestDeviceList)
             .unwrap();
-
         engine.process_commands();
 
-        // On devrait recevoir un événement DeviceList
-        // (même si la liste est vide sur un serveur sans audio)
         match channels.event_rx.try_recv() {
-            Ok(Event::DeviceList { inputs, outputs }) => {
-                // On vérifie juste que c'est bien un DeviceList
-                // Le contenu dépend de la machine
-                // inputs et outputs sont des Vec — on vérifie juste
-                // que la destructuration a fonctionné
-                let _ = inputs;
-                let _ = outputs;
-            }
-            other => {
-                // Sur certains systèmes, le DeviceList peut ne pas arriver
-                // si le channel est plein. C'est acceptable.
-                println!("Received: {other:?}");
-            }
+            Ok(Event::DeviceList { .. }) => {}
+            other => println!("Received: {other:?}"),
         }
     }
 
     #[test]
     fn engine_processes_shutdown() {
         let (mut engine, channels) = Engine::new();
-
         channels.command_tx.send(Command::Shutdown).unwrap();
-
         engine.process_commands();
         assert_eq!(engine.state(), EngineState::Stopped);
     }
@@ -548,8 +640,6 @@ mod tests {
     #[test]
     fn engine_handles_multiple_commands() {
         let (mut engine, channels) = Engine::new();
-
-        // Envoyer plusieurs commandes d'un coup
         channels
             .command_tx
             .send(Command::SetVolume {
@@ -564,17 +654,13 @@ mod tests {
                 muted: true,
             })
             .unwrap();
-
-        // Toutes traitées en un seul appel
         engine.process_commands();
-
-        assert_eq!(engine.volume(), 0.8);
-        assert!(engine.is_muted());
+        assert_eq!(engine.mixer().channel(ChannelId(0)).unwrap().volume, 0.8);
+        assert!(engine.mixer().channel(ChannelId(0)).unwrap().muted);
     }
 
     #[test]
     fn engine_channels_are_send() {
-        // Vérifie que les channels peuvent traverser les threads
         fn assert_send<T: Send>() {}
         assert_send::<Sender<Command>>();
         assert_send::<Receiver<Event>>();
@@ -582,9 +668,7 @@ mod tests {
 
     #[test]
     fn engine_stop_is_idempotent() {
-        // Appeler stop() plusieurs fois ne doit pas paniquer
         let (mut engine, _channels) = Engine::new();
-        engine.stop();
         engine.stop();
         engine.stop();
         assert_eq!(engine.state(), EngineState::Stopped);

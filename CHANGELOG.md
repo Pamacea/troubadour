@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-20
+
+### Fixed
+- **Audio controls now work**: Volume, mute, solo, and pan actually control the audio output
+- **Mono → Stéréo**: Input signal is downmixed to mono then redistributed with pan law — fixes single-ear audio on mono inputs (e.g., Komplete Audio 2 mic input)
+- **Command channel architecture**: Dedicated crossbeam channel for UI → mixer thread — fixes commands being consumed by wrong receiver in mpmc setup
+
+### Changed
+- **SharedMixerState**: Simplified to single gain pair (L/R) + mute flag, read by audio callback via `try_lock` (non-blocking)
+- **Engine architecture**: Separate mixer thread processes commands and syncs to SharedMixerState; audio callback reads gains without blocking
+- **Input processing**: All inputs are downmixed to mono before pan is applied — ensures signal in both ears regardless of input channel configuration
+
+### Added
+- 4 new engine tests: `engine_volume_updates_shared_state`, `engine_mute_updates_shared_state`, `engine_pan_updates_shared_state`, `engine_has_default_mixer`
+
 ## [0.2.0] - 2026-03-19
 
 ### Added
@@ -52,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CHANGELOG, LICENSE (MIT), ROADMAP
 - Documentation: ARCHITECTURE.md, GUIDE.md, REFERENCE.md
 
-[Unreleased]: https://github.com/Pamacea/troubadour/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Pamacea/troubadour/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Pamacea/troubadour/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Pamacea/troubadour/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Pamacea/troubadour/compare/v0.0.0...v0.1.0
 [0.0.0]: https://github.com/Pamacea/troubadour/releases/tag/v0.0.0

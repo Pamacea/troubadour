@@ -2,12 +2,6 @@ use dioxus::prelude::*;
 
 mod components;
 
-/// Le CSS Tailwind compilé, inclus dans le binaire.
-///
-/// # `include_str!` — inclusion au compile-time
-/// Cette macro lit le fichier au moment de la compilation et l'insère
-/// comme une `&'static str`. Le binaire est autonome : pas besoin
-/// de distribuer le fichier CSS séparément.
 const TAILWIND_CSS: &str = include_str!("../assets/tailwind.css");
 
 fn main() {
@@ -20,38 +14,65 @@ fn main() {
 
     tracing::info!("Starting Troubadour...");
 
-    // Créer l'engine et démarrer l'audio
     let (mut engine, channels) = troubadour_core::engine::Engine::new();
+
     match engine.start() {
         Ok(()) => tracing::info!("Audio engine started"),
         Err(e) => tracing::error!("Failed to start audio engine: {e}"),
     }
 
-    // Thread de commandes
-    let command_rx = engine.take_command_receiver();
-    let _event_tx = engine.take_event_sender();
+    // UN SEUL thread traite les commandes.
+    // Pas de clonage du receiver — sinon crossbeam distribue les messages
+    // et certaines commandes sont "volées" par le mauvais thread.
+    //
+    // Ce thread possède un Mixer local qui synchronise vers le SharedMixerState.
+    // Le SharedMixerState est lu par le callback audio (try_lock).
+    let shared_mixer = engine.shared_mixer_state();
+    // Créer un channel dédié pour les commandes du thread de traitement.
+    // L'UI envoie sur `cmd_tx`, le thread lit sur `cmd_rx`.
+    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<troubadour_shared::messages::Command>(64);
 
     std::thread::spawn(move || {
+        let mut mixer = troubadour_core::mixer::Mixer::from_config(
+            troubadour_shared::mixer::MixerConfig::default_setup(),
+        );
+
         loop {
-            match command_rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                Ok(troubadour_shared::messages::Command::Shutdown) => break,
-                Ok(cmd) => tracing::debug!("Command: {cmd:?}"),
+            match cmd_rx.recv_timeout(std::time::Duration::from_millis(5)) {
+                Ok(cmd) => {
+                    use troubadour_shared::messages::Command;
+                    match cmd {
+                        Command::SetVolume { channel, level } => {
+                            mixer.set_volume(channel, level);
+                            tracing::info!("Volume: {level:.2} on {channel:?}");
+                        }
+                        Command::SetMute { channel, muted } => {
+                            mixer.set_mute(channel, muted);
+                            tracing::info!("Mute: {muted} on {channel:?}");
+                        }
+                        Command::SetSolo { channel, solo } => {
+                            mixer.set_solo(channel, solo);
+                            tracing::info!("Solo: {solo} on {channel:?}");
+                        }
+                        Command::SetPan { channel, pan } => {
+                            mixer.set_pan(channel, pan);
+                            tracing::info!("Pan: {pan:.2} on {channel:?}");
+                        }
+                        Command::Shutdown => break,
+                        _ => {}
+                    }
+                    shared_mixer.update_from_mixer(&mixer);
+                }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
         }
     });
 
-    let _ = channels
-        .command_tx
-        .try_send(troubadour_shared::messages::Command::RequestDeviceList);
+    // Stocker le sender dédié pour l'UI
+    CMD_TX.write().unwrap().replace(cmd_tx);
+    EVENT_RX.write().unwrap().replace(channels.event_rx);
 
-    // Configuration desktop avec custom head pour le CSS.
-    //
-    // # `LaunchBuilder` — la méthode Dioxus 0.6 pour configurer le desktop
-    // Au lieu de `dioxus::launch(app)`, on utilise le builder pour :
-    // - Injecter du CSS dans le <head> via `with_custom_head`
-    // - Configurer la taille de fenêtre, le titre, etc.
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             dioxus::desktop::Config::new()
@@ -65,7 +86,33 @@ fn main() {
         .launch(app);
 }
 
-/// Composant racine.
+// Sender dédié pour les commandes UI → thread de traitement
+static CMD_TX: std::sync::RwLock<
+    Option<crossbeam_channel::Sender<troubadour_shared::messages::Command>>,
+> = std::sync::RwLock::new(None);
+
+// Receiver pour les événements engine → UI
+static EVENT_RX: std::sync::RwLock<
+    Option<crossbeam_channel::Receiver<troubadour_shared::messages::Event>>,
+> = std::sync::RwLock::new(None);
+
+pub fn send_command(cmd: troubadour_shared::messages::Command) {
+    if let Ok(guard) = CMD_TX.read()
+        && let Some(tx) = guard.as_ref()
+    {
+        let _ = tx.try_send(cmd);
+    }
+}
+
+pub fn try_recv_event() -> Option<troubadour_shared::messages::Event> {
+    if let Ok(guard) = EVENT_RX.read()
+        && let Some(rx) = guard.as_ref()
+    {
+        return rx.try_recv().ok();
+    }
+    None
+}
+
 fn app() -> Element {
     rsx! {
         components::mixer_view::MixerView {}
