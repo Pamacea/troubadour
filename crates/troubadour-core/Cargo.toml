@@ -1,0 +1,26 @@
+[package]
+name = "troubadour-core"
+description = "Audio engine for Troubadour"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+troubadour-shared = { path = "../troubadour-shared" }
+# cpal : Cross-Platform Audio Library.
+# Abstraction au-dessus de WASAPI (Win), CoreAudio (Mac), ALSA (Linux).
+# On n'a pas à écrire du code spécifique par OS.
+cpal = "0.15"
+# rubato : Sample rate conversion de haute qualité.
+# Utilise des filtres sinc (interpolation) pour convertir entre sample rates
+# (ex: 44.1kHz → 48kHz) avec un minimum d'artefacts audio.
+rubato = "0.16"
+crossbeam-channel = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Dépendances utilisées UNIQUEMENT pour les tests.
+# Pas incluses dans le binaire final → pas de bloat.
+tracing-subscriber = { workspace = true }

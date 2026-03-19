@@ -1,0 +1,33 @@
+[workspace]
+# `resolver = "2"` est le résolveur de dépendances moderne de Cargo.
+# Depuis l'édition 2021, c'est le défaut. Il gère mieux les features
+# conditionnelles : chaque crate peut activer des features différentes
+# d'une même dépendance sans conflit.
+resolver = "2"
+
+# Liste des crates du workspace. Cargo compile tout ensemble,
+# partage le même /target, et garantit la cohérence des versions.
+members = [
+    "crates/troubadour-shared",
+    "crates/troubadour-core",
+    "crates/troubadour-ui",
+]
+
+# Dépendances partagées par tout le workspace.
+# Au lieu de spécifier la version dans chaque crate,
+# on la définit une seule fois ici. Les crates font :
+#   serde = { workspace = true }
+# C'est le "Single Source of Truth" pour les versions.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+crossbeam-channel = "0.5"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Pamacea/troubadour"

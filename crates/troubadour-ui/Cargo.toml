@@ -1,0 +1,19 @@
+[package]
+name = "troubadour-ui"
+description = "Desktop interface for Troubadour"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+troubadour-shared = { path = "../troubadour-shared" }
+troubadour-core = { path = "../troubadour-core" }
+# `desktop` feature = rendu natif via WebView du système.
+# Pas de serveur web, pas de navigateur externe.
+dioxus = { version = "0.6", features = ["desktop"] }
+cpal = "0.15"
+crossbeam-channel = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tokio = { version = "1", features = ["time"] }

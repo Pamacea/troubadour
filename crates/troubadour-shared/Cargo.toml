@@ -1,0 +1,14 @@
+[package]
+name = "troubadour-shared"
+description = "Shared types and configuration for Troubadour"
+# Hérite version, edition, license, repository du workspace.
+# Pas de duplication = moins d'erreurs de synchro.
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
