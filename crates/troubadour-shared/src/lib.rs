@@ -8,3 +8,4 @@ pub mod dsp;
 pub mod error;
 pub mod messages;
 pub mod mixer;
+pub mod profile;

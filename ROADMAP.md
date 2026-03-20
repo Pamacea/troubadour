@@ -52,17 +52,17 @@
 
 > UI moderne à la SteelSeries Sonar. Configuration intuitive. Presets globaux.
 
-- [ ] **Design system** : thème sombre moderne, composants réutilisables (knobs, faders, toggles, meters)
-- [ ] **Vue Mixer** : interface principale avec tous les canaux, inspirée Sonar
-- [ ] **Vue Routing** : matrice de routage visuelle avec câbles ou grille interactive
-- [ ] **Vue Device** : configuration des périphériques, sample rate, buffer size
-- [ ] **Vue Effects** : chaîne d'effets par canal avec visualisations
-- [ ] **Profils globaux** : sauvegarder/charger la configuration complète (routing + volumes + effets)
-- [ ] **Profils rapides** : switch instantané entre profils (Gaming, Streaming, Music, Meeting)
-- [ ] **System tray** : minimiser dans la barre système, accès rapide
-- [ ] **Raccourcis clavier** : mute/unmute, switch profil, volume up/down
-- [ ] **Démarrage auto** : option lancement au démarrage du système
-- [ ] **Onboarding** : assistant première configuration (détection devices, profil suggéré)
+- [x] **Vue Mixer** : onglet Mixer avec channel strips, routing matrix
+- [x] **Vue Effects** : onglet Effects avec controles DSP complets
+- [x] **Vue Device** : onglet Devices avec selection input/output (UI only, hot-switch reporté v0.5)
+- [x] **Profils globaux** : Profile type serialisable TOML (mixer + effects + devices)
+- [x] **Profils rapides** : 5 profils (Default, Gaming, Streaming, Music, Meeting) switch en un clic
+- [x] **Navigation tabs** : Mixer | Effects | Devices avec header et footer
+- [ ] **Design system** : polish visuel (reporté post-v0.5)
+- [ ] **System tray** : minimiser dans la barre systeme (reporté post-v0.5)
+- [ ] **Raccourcis clavier** : mute/unmute, switch profil (reporté post-v0.5)
+- [ ] **Demarrage auto** : option lancement au demarrage (reporté post-v0.5)
+- [ ] **Onboarding** : assistant premiere configuration (reporté post-v0.5)
 
 ## v0.5.0 — Production Ready
 
